@@ -1,0 +1,36 @@
+{
+  "name": "bulkhead",
+  "version": "0.1.0",
+  "description": "Firefox extension pinning each container to its own Mullvad SOCKS5 exit, with a fail-closed killswitch. Unofficial; not affiliated with Mullvad AB.",
+  "author": "S4N-T0S (https://github.com/S4N-T0S)",
+  "license": "GPL-3.0-only",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/S4N-T0S/Bulkhead.git"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "setup": "node tools/get-firefox.mjs",
+    "start": "web-ext run",
+    "lint": "eslint .",
+    "lint:amo": "node tools/lint-amo.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test \"test/unit/**/*.test.js\"",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"src/**\" \"test/unit/**/*.test.js\"",
+    "test:e2e": "node test/e2e/run.mjs",
+    "build": "web-ext build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "@types/firefox-webext-browser": "^143.0.0",
+    "addons-linter": "^10.9.0",
+    "eslint": "^10.8.0",
+    "globals": "^17.8.0",
+    "typescript": "^7.0.2",
+    "web-ext": "^10.5.0"
+  }
+}

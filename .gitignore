@@ -1,0 +1,11 @@
+node_modules/
+.cache/
+dist/
+web-ext-artifacts/
+*.log
+*.xpi
+.env
+
+# working notes, listing drafts, review material -- not part of the
+# published repository. README.md and assets/ are, and stay tracked.
+docs/

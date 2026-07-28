@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Blocked — Bulkhead</title>
+<link rel="stylesheet" href="../ui/base.css">
+<link rel="stylesheet" href="blocked.css">
+</head>
+<body>
+<main>
+  <div class="row head">
+    <svg class="hatch" width="26" height="26" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5"/>
+      <circle cx="8" cy="8" r="2.1" fill="currentColor"/>
+    </svg>
+    <h1>Bulkhead stopped this page loading</h1>
+  </div>
+
+  <p class="lede">
+    <strong>Nothing was sent.</strong> Bulkhead cancelled this request inside Firefox, so your
+    real address was never used for it.
+  </p>
+
+  <div class="banner danger" id="explain"></div>
+
+  <dl>
+    <dt>Container</dt><dd id="container">—</dd>
+    <dt>Reason</dt><dd id="reason" class="mono">—</dd>
+    <dt>Requested</dt><dd id="url" class="mono">—</dd>
+  </dl>
+
+  <div class="row">
+    <button id="retry" class="primary">Re-check and retry</button>
+    <button id="options">Settings</button>
+    <span id="status" class="sub"></span>
+  </div>
+
+  <p class="sub footer">Bulkhead</p>
+</main>
+<script src="../ui/fmt.js"></script>
+<script src="blocked.js"></script>
+</body>
+</html>

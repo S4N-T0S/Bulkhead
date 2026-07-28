@@ -1,0 +1,60 @@
+{
+  "manifest_version": 2,
+  "name": "Bulkhead",
+  "version": "0.1.0",
+  "description": "Gives each Firefox container its own Mullvad server. If that server stops working, the container's tabs stop loading rather than fall back to your real connection. Unofficial, not by Mullvad AB.",
+  "author": "S4N-T0S",
+  "homepage_url": "https://github.com/S4N-T0S/Bulkhead",
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "bulkhead@s4nt0s",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  },
+
+  "permissions": [
+    "<all_urls>",
+    "proxy",
+    "webRequest",
+    "webRequestBlocking",
+    "storage",
+    "contextualIdentities",
+    "cookies",
+    "dns",
+    "alarms",
+    "notifications",
+    "privacy",
+    "clipboardWrite"
+  ],
+
+  "content_security_policy": "script-src 'self'; object-src 'none'",
+
+  "background": {
+    "scripts": ["decide.js", "relays.js", "ui/fmt.js", "background.js"],
+    "persistent": true
+  },
+
+  "browser_action": {
+    "default_title": "Bulkhead",
+    "default_popup": "popup/popup.html",
+    "default_icon": "icons/hatch-dark.svg",
+    "theme_icons": [
+      { "light": "icons/hatch-light.svg", "dark": "icons/hatch-dark.svg", "size": 16 },
+      { "light": "icons/hatch-light.svg", "dark": "icons/hatch-dark.svg", "size": 32 }
+    ]
+  },
+
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+
+  "icons": {
+    "48": "icons/bulkhead.svg",
+    "96": "icons/bulkhead.svg"
+  }
+}

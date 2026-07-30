@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bulkhead — settings</title>
+<link rel="stylesheet" href="../ui/base.css">
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+<div class="page">
+  <header class="row">
+    <svg class="hatch" width="22" height="22" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5"/>
+      <circle cx="8" cy="8" r="2.1" fill="currentColor"/>
+    </svg>
+    <div>
+      <h1>Bulkhead</h1>
+      <div class="sub">Every container gets its own exit, or nothing gets out</div>
+    </div>
+  </header>
+
+  <section class="card" id="setup">
+    <div class="row">
+      <h2 id="setup-heading">Two settings to set by hand</h2>
+      <span class="grow"></span>
+      <span id="setup-state" class="pill off" hidden>set by hand</span>
+      <button id="setup-toggle" class="quiet" hidden>Show</button>
+    </div>
+    <div id="setup-body">
+      <p>
+        Two Firefox settings close the gaps no extension can reach. There is no API for
+        them — they have to be set once, by hand, in <code>about:config</code>.
+      </p>
+      <div class="pref well">
+        <div class="row">
+          <code class="grow">network.proxy.failover_direct</code>
+          <span class="sub">set to</span><code class="want">false</code>
+          <button class="copy" data-copy="network.proxy.failover_direct">Copy name</button>
+        </div>
+        <p class="sub">
+          Defence in depth. On Firefox 154 a failed container exit does not fall back to a direct
+          connection for ordinary page loads — that path is gated behind a build flag and an
+          internal-requests-only check — but the gating has changed before and this is one line
+          to set. If you have a system or PAC proxy configured, a failed exit falls through to
+          <em>that</em> proxy; the exit check catches it.
+        </p>
+      </div>
+      <div class="pref well">
+        <div class="row">
+          <code class="grow">network.trr.mode</code>
+          <span class="sub">set to</span><code class="want">5</code>
+          <button class="copy" data-copy="network.trr.mode">Copy name</button>
+        </div>
+        <p class="sub">
+          Turns off DNS-over-HTTPS — the setting that decides who Firefox asks for website
+          addresses. Sounds backwards, and it isn't: with it on, every container asks the same
+          provider over your ordinary connection, which ties your containers straight back
+          together. With it off, each container's own Mullvad server does its lookups.
+        </p>
+        <p class="sub">
+          The trade-off: tabs that aren't going through Bulkhead will use whatever your computer
+          normally uses for lookups. While the Mullvad app is running that is inside the tunnel;
+          while it isn't, that is your internet provider.
+        </p>
+        <p id="doh-state" class="sub"></p>
+      </div>
+      <p class="sub steps">
+        Open a new tab → type <code>about:config</code> → accept the warning → paste the
+        name → set the value. Repeat for the second one.
+      </p>
+      <label class="row ack">
+        <span class="switch"><input type="checkbox" id="prefs-ack"></span>
+        <span>Both are set — I checked in about:config</span>
+      </label>
+      <details>
+        <summary class="sub">What Bulkhead can't protect you from</summary>
+        <ul class="sub">
+          <li>A system-wide or company proxy catching a failed container. That is what the first
+            setting above is for.</li>
+          <li>All your containers sharing one DNS provider. That is what the second is for.</li>
+          <li>Bulkhead being switched off, crashed or uninstalled. Nothing protects you then.</li>
+          <li>Anything that leaves Firefox entirely: other browsers, apps, your operating system.</li>
+        </ul>
+        <p class="sub">
+          There is deliberately no “test for leaks” button: two well-known leak detectors were
+          tried and both reported <em>no leak</em> while the browser was leaking. What Bulkhead
+          does instead is keep checking. Each container you have set up is tested against
+          <code>am.i.mullvad.net</code> — through that container's own server — about every ten
+          minutes, and about every thirty seconds while something is wrong. Each check is a few
+          seconds apart from the others on purpose, so they cannot be lined up with each other.
+          If traffic comes out anywhere but the server you chose, that container is blocked.
+        </p>
+      </details>
+    </div>
+  </section>
+
+  <div id="offline-banner"></div>
+
+  <section class="card">
+    <div class="row">
+      <h2>Containers</h2>
+      <span class="grow"></span>
+      <button id="recheck-all">Re-check all</button>
+    </div>
+    <div class="scroller">
+      <table id="containers">
+        <thead>
+          <tr><th>Container</th><th>Server</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody id="container-rows"></tbody>
+      </table>
+    </div>
+    <div class="banner" id="no-containers" hidden>
+      <strong>You don't have any containers yet.</strong>
+      <p class="sub">
+        Containers keep cookies and logins apart, so a work tab and a personal tab can be
+        signed in to the same site as two different people. Bulkhead gives each one its own
+        Mullvad exit and blocks that container's traffic whenever the exit isn't confirmed
+        working. The two rows above cover everything outside a container.
+      </p>
+      <p class="sub">
+        To make one: open a new tab and press and hold the <strong>+</strong> button, or install
+        Multi-Account Containers.
+      </p>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Protection</h2>
+    <label class="row setting">
+      <span class="switch"><input type="checkbox" id="strict"></span>
+      <span class="grow">
+        <strong>Strict mode</strong>
+        <span class="sub block">
+          Blocks requests when Firefox doesn't say which container they came from, and the
+          connections Firefox makes to links before you click them.
+          <strong>Turning this off lets those requests use your ordinary connection instead.</strong>
+          That is fine for most browsing, but it is a real gap. A container whose server is down
+          stays blocked either way.
+        </span>
+      </span>
+    </label>
+    <label class="row setting">
+      <span class="switch"><input type="checkbox" id="harden"></span>
+      <span class="grow">
+        <strong>Extra protection</strong>
+        <span class="sub block">
+          Closes two ways traffic can leave outside a container: video-call connections (WebRTC),
+          and Firefox connecting to links before you click them.
+          <strong>This usually stops browser video calls working</strong> — Meet, Jitsi, Discord in
+          a tab. Switch it back off if you need one. These are whole-browser settings, not
+          per-container, and they are put back exactly as they were when you switch it off.
+        </span>
+      </span>
+    </label>
+    <ul id="harden-state" class="sub"></ul>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <h2>Server list</h2>
+      <span class="grow"></span>
+      <span id="relay-meta" class="sub"></span>
+      <button id="refresh-relays">Refresh</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <h2>Recently blocked</h2>
+      <span class="sub">kept in memory only · cleared when Firefox closes</span>
+      <span class="grow"></span>
+      <button id="clear-log" class="quiet">Clear</button>
+    </div>
+    <div id="block-log" class="sub">Nothing blocked yet.</div>
+  </section>
+
+  <footer class="row sub">
+    <span id="version"></span>
+    <span>·</span>
+    <a href="https://github.com/S4N-T0S/Bulkhead" target="_blank" rel="noreferrer">source</a>
+    <span>·</span>
+    <span>GPL-3.0</span>
+    <span>·</span>
+    <span>not affiliated with Mullvad AB</span>
+    <span class="grow"></span>
+    <a href="https://s4nt0s.eu" target="_blank" rel="noreferrer">by S4N-T0S</a>
+  </footer>
+</div>
+
+<dialog id="picker-dialog" aria-labelledby="picker-title">
+  <div class="row">
+    <strong id="picker-title" class="grow"></strong>
+    <button id="picker-close" class="iconbtn" aria-label="Close">✕</button>
+  </div>
+  <div id="picker-error"></div>
+  <div id="picker-mount"></div>
+</dialog>
+
+<script src="../relays.js"></script>
+<script src="../ui/fmt.js"></script>
+<script src="../ui/picker.js"></script>
+<script src="options.js"></script>
+</body>
+</html>

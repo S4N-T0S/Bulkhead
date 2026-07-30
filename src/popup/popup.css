@@ -1,0 +1,71 @@
+body {
+  width: 340px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+header .hatch { color: var(--accent-fill); }
+
+main {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 120px;
+}
+
+footer {
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.container-row { min-height: 24px; }
+.swatch {
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  flex: none;
+  display: inline-block;
+  background: var(--muted);
+}
+.swatch.builtin { background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.container-row .name {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exit-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.exit-card > .row { flex-wrap: wrap; align-items: flex-start; }
+.exit-card .place { font-weight: 600; min-width: 60%; }
+.exit-card .host { color: var(--muted); }
+
+.picker { max-height: 400px; }
+.picker-list { max-height: 330px; }
+
+.backbar button { font-weight: 600; }
+
+.msg { text-align: center; padding: 14px 4px; color: var(--muted); }
+
+.setup-strip {
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: normal;
+}
+.setup-strip:hover { background: var(--warn-bg); }

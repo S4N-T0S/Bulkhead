@@ -20,7 +20,7 @@
     snapshot = st
     identities = ids
     // one bad section should not blank the whole page
-    for (const render of [renderSetup, renderOffline, renderContainers, renderRelayMeta, renderLog]) {
+    for (const render of [renderSetup, renderOffline, renderContainers, renderRelayMeta, renderCustom, renderLog]) {
       try {
         render()
       } catch (e) {
@@ -29,6 +29,8 @@
     }
     const strict = /** @type {HTMLInputElement} */ ($('strict'))
     strict.checked = st.strict
+    const allowLocal = /** @type {HTMLInputElement} */ ($('allow-local'))
+    allowLocal.checked = st.allowLocal
     $('version').textContent = `v${st.version}`
   }
 
@@ -227,6 +229,7 @@
       const exitCell = tr.insertCell()
       if (c) {
         const tunnelExit = c.host === 'mullvad-direct'
+        const customExit = c.custom === true
         const wrap = document.createElement('div')
         wrap.className = 'exitcell'
         const src = fmt.flagSrc(c.cc)
@@ -239,10 +242,10 @@
         }
         const place = document.createElement('span')
         place.className = 'place'
-        place.textContent = tunnelExit ? 'Tunnel exit' : c.city
+        place.textContent = tunnelExit ? 'Tunnel exit' : customExit ? (c.label || 'Custom exit') : c.city
         const host = document.createElement('span')
         host.className = 'mono hostname'
-        host.textContent = tunnelExit ? c.ip : c.host
+        host.textContent = tunnelExit ? c.ip : customExit ? `${c.ip}:${c.port}` : c.host
         place.append(host)
         wrap.append(place)
         exitCell.append(wrap)
@@ -263,10 +266,10 @@
         const ago = fmt.timeAgo(c.healthAt, Date.now())
         const why = c.health === 'up'
           ? (c.exitIp ? `exit ${c.exitIp}` : '')
-          : fmt.explainDetail(c.healthDetail)
+          : fmt.explainDetail(c.healthDetail, c.custom)
         sub.textContent = [why, ago].filter(Boolean).join(' · ')
         statusCell.append(sub)
-        const raw = c.health === 'up' ? '' : fmt.rawDetail(c.healthDetail)
+        const raw = c.health === 'up' ? '' : fmt.rawDetail(c.healthDetail, c.custom)
         if (raw) {
           const code = document.createElement('code')
           code.className = 'sub'
@@ -346,6 +349,11 @@
 
   const dialog = /** @type {HTMLDialogElement} */ ($('picker-dialog'))
   $('picker-close').addEventListener('click', () => dialog.close())
+  // ~600 rows and the relay list behind them would otherwise sit in the
+  // closed dialog until the next time it opens.
+  dialog.addEventListener('close', () => {
+    $('picker-mount').textContent = ''
+  })
 
   /** @param {string} cookieStoreId */
   async function openPicker (cookieStoreId) {
@@ -363,16 +371,18 @@
     dialog.showModal()
 
     const res = await browser.runtime.sendMessage({ cmd: 'getRelays' }).catch(e => ({ error: String(e) }))
+    mount.textContent = ''
     if (!res.relays) {
-      mount.textContent = ''
-      showPickerError(`Could not load the server list. ${res.error || 'Check the Mullvad app is connected.'}`)
-      return
+      // Custom exits do not come from that list and do not need the tunnel,
+      // so the picker still has something to offer -- returning here would
+      // put the one thing that still works behind the one thing that failed.
+      showPickerError('Could not load the Mullvad server list. Check the Mullvad app is connected. Custom exits are still listed below.')
     }
 
-    mount.textContent = ''
     const current = snapshot.containers[cookieStoreId]
     const picker = createPicker({
-      relays: res.relays,
+      relays: res.relays || [],
+      customExits: snapshot.customExits,
       recents: snapshot.recents,
       favorites: snapshot.favorites,
       currentHost: current ? current.host : '',
@@ -409,6 +419,11 @@
   $('strict').addEventListener('change', async (e) => {
     const on = /** @type {HTMLInputElement} */ (e.target).checked
     await browser.runtime.sendMessage({ cmd: 'setStrict', on })
+  })
+
+  $('allow-local').addEventListener('change', async (e) => {
+    const on = /** @type {HTMLInputElement} */ (e.target).checked
+    await browser.runtime.sendMessage({ cmd: 'setAllowLocal', on })
   })
 
   async function renderHardening () {
@@ -470,6 +485,118 @@
     await refresh()
   })
 
+  // -- custom exits
+
+  /** @param {string} id @returns {HTMLInputElement} */
+  const input = id => /** @type {HTMLInputElement} */ ($(id))
+
+  // '' means the form is adding; an id means it is editing that exit.
+  let editingCustom = ''
+
+  function renderCustom () {
+    if (!snapshot) return
+    const box = $('custom-list')
+    box.textContent = ''
+    for (const e of snapshot.customExits) {
+      const row = document.createElement('div')
+      row.className = 'custom-exit'
+      const name = document.createElement('strong')
+      name.textContent = e.label
+      const addr = document.createElement('code')
+      addr.className = 'sub addr'
+      addr.textContent = `${e.host}:${e.port}${e.username ? ' · credentials' : ''}`
+      const grow = document.createElement('span')
+      grow.className = 'grow'
+      const edit = document.createElement('button')
+      edit.className = 'quiet'
+      edit.textContent = 'Edit'
+      edit.addEventListener('click', () => {
+        $('custom-error').textContent = ''
+        editingCustom = e.id
+        input('cx-label').value = e.label
+        input('cx-host').value = e.host
+        input('cx-port').value = String(e.port)
+        input('cx-user').value = e.username
+        // The stored password never comes back from the background page, so
+        // the box starts empty and an empty box means "leave it as it is".
+        input('cx-pass').value = ''
+        input('cx-pass').placeholder = e.username ? 'Password — unchanged' : 'Password'
+        $('cx-save').textContent = 'Save'
+        $('cx-cancel').hidden = false
+        input('cx-label').focus()
+      })
+      const del = document.createElement('button')
+      del.className = 'quiet danger'
+      del.textContent = 'Delete'
+      del.addEventListener('click', async () => {
+        $('custom-error').textContent = ''
+        del.disabled = true
+        const out = await browser.runtime.sendMessage({ cmd: 'customDelete', id: e.id })
+        if (!out.ok) showCustomError(out.error || 'Could not delete this exit.')
+        await refresh()
+      })
+      row.append(name, addr, grow, edit, del)
+      box.append(row)
+    }
+  }
+
+  function resetCustomForm () {
+    editingCustom = ''
+    for (const id of ['cx-label', 'cx-host', 'cx-port', 'cx-user', 'cx-pass']) input(id).value = ''
+    input('cx-pass').placeholder = 'Password'
+    $('cx-save').textContent = 'Add'
+    $('cx-cancel').hidden = true
+  }
+
+  /** @param {string} text */
+  function showCustomError (text) {
+    const box = $('custom-error')
+    box.textContent = ''
+    const err = document.createElement('div')
+    err.className = 'banner danger'
+    err.textContent = text
+    box.append(err)
+  }
+
+  $('cx-cancel').addEventListener('click', resetCustomForm)
+
+  $('custom-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault()
+    $('custom-error').textContent = ''
+    const save = /** @type {HTMLButtonElement} */ ($('cx-save'))
+    // a second submit while the first is in flight adds the exit twice
+    if (save.disabled) return
+    const label = save.textContent
+    save.style.minWidth = `${save.offsetWidth}px`
+    save.disabled = true
+    save.textContent = 'Saving…'
+    try {
+      const out = await browser.runtime.sendMessage({
+        cmd: 'customSave',
+        exit: {
+          id: editingCustom || undefined,
+          label: input('cx-label').value.trim(),
+          host: input('cx-host').value.trim(),
+          // valueAsNumber, not parseInt: the field accepts 1e3, and parseInt
+          // would quietly save that as port 1
+          port: input('cx-port').valueAsNumber,
+          username: input('cx-user').value,
+          password: input('cx-pass').value
+        }
+      })
+      if (!out.ok) {
+        showCustomError(out.error || 'Could not save this exit.')
+        save.textContent = label
+        return
+      }
+      // puts the label back to Add, along with the rest of the form
+      resetCustomForm()
+    } finally {
+      save.disabled = false
+    }
+    await refresh()
+  })
+
   // This is where the extension shows its work, so it gets the same
   // treatment as the tables above it rather than a console dump.
   function renderLog () {
@@ -514,8 +641,22 @@
     await refresh()
   })
 
-  refresh().then(renderHardening)
+  // Without this the page renders its empty skeleton and says nothing: the
+  // tables, the version and the log all come from one call, so one rejection
+  // takes the lot, and the per-section guards above never get to run.
+  /** @param {unknown} e */
+  function refreshFailed (e) {
+    const box = $('offline-banner')
+    box.textContent = ''
+    const b = document.createElement('div')
+    b.className = 'banner danger'
+    b.setAttribute('role', 'alert')
+    b.textContent = `Bulkhead could not read its own settings: ${e instanceof Error ? e.message : String(e)}`
+    box.append(b)
+  }
+
+  refresh().then(renderHardening).catch(refreshFailed)
   setInterval(() => {
-    if (!dialog.open) refresh()
+    if (!dialog.open) refresh().catch(refreshFailed)
   }, 5000)
 })()

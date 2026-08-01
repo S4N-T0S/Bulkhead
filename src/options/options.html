@@ -142,6 +142,21 @@
       </span>
     </label>
     <label class="row setting">
+      <span class="switch"><input type="checkbox" id="allow-local"></span>
+      <span class="grow">
+        <strong>Allow loopback addresses</strong>
+        <span class="sub block">
+          Lets requests to this computer — localhost, 127.0.0.1, ::1 — through even while a
+          container is blocked. Apps that finish a sign-in on a local port need this; the
+          traffic cannot leave your machine, and no name lookup is involved. With Firefox's
+          default settings these are never sent through a proxy anyway, so this only opens
+          the killswitch for them.
+          <strong>A blocked container's pages can then still reach services listening
+          locally.</strong> Leave it off unless something you use needs it.
+        </span>
+      </span>
+    </label>
+    <label class="row setting">
       <span class="switch"><input type="checkbox" id="harden"></span>
       <span class="grow">
         <strong>Browser hardening</strong>
@@ -164,6 +179,36 @@
       <span id="relay-meta" class="sub"></span>
       <button id="refresh-relays">Refresh</button>
     </div>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <h2>Custom exits</h2>
+    </div>
+    <p class="sub">
+      Your own SOCKS5 servers — an SSH tunnel, a server you are trying out. They are held to
+      the same rule as every Mullvad exit: checked by fetching <code>am.i.mullvad.net</code>
+      through the server itself, blocked whenever that check fails or does not travel through
+      it. What no check can tell you is where a foreign exit comes out — “Protected” on one
+      of these means it answered, not that anyone vouched for it.
+    </p>
+    <div id="custom-list"></div>
+    <form id="custom-form" class="row wrap">
+      <input id="cx-label" type="text" placeholder="Name" aria-label="Name" maxlength="60">
+      <input id="cx-host" type="text" placeholder="Host — 127.0.0.1" aria-label="Host" maxlength="255" required>
+      <input id="cx-port" type="number" min="1" max="65535" placeholder="Port" aria-label="Port" required>
+      <input id="cx-user" type="text" placeholder="Username" aria-label="Username" autocomplete="off" maxlength="255">
+      <input id="cx-pass" type="password" placeholder="Password" aria-label="Password" autocomplete="new-password" maxlength="255">
+      <button id="cx-save" class="primary" type="submit">Add</button>
+      <button id="cx-cancel" class="quiet" type="button" hidden>Cancel</button>
+    </form>
+    <div id="custom-error" role="alert" aria-live="assertive"></div>
+    <p class="sub">
+      A hostname here is looked up by your system resolver on every connection — use an IP
+      address where you can. Credentials are stored in this Firefox profile unencrypted, and
+      go only to the server itself — in the clear, because SOCKS5 offers nothing better.
+      When editing, an empty password box keeps the saved one; clear the username to drop both.
+    </p>
   </section>
 
   <section class="card">
@@ -194,7 +239,7 @@
     <strong id="picker-title" class="grow"></strong>
     <button id="picker-close" class="iconbtn" aria-label="Close">✕</button>
   </div>
-  <div id="picker-error"></div>
+  <div id="picker-error" role="alert" aria-live="assertive"></div>
   <div id="picker-mount"></div>
 </dialog>
 

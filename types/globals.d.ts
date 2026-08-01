@@ -7,19 +7,34 @@
 type Health = 'up' | 'down' | 'misrouted' | 'unknown'
 
 interface ContainerConfig {
+  /** Literal 10.124.x.x for relays; a custom exit may carry a hostname */
   ip: string
   port: number
-  /** WireGuard hostname shown to the user, e.g. se-got-wg-001 */
+  /** WireGuard hostname shown to the user (se-got-wg-001), or custom:<id> */
   host: string
   /** First label of socks_name; what am.i.mullvad.net reports as the exit */
   socksHost: string
   city: string
   country: string
   cc: string
+  /** Set on user-defined exits; skips misroute/offline checks */
+  custom?: true
+  label?: string
+  username?: string
+  password?: string
   health?: Health
   healthDetail?: string
   healthAt?: number
   exitIp?: string
+}
+
+interface CustomExit {
+  id: string
+  label: string
+  host: string
+  port: number
+  username: string
+  password: string
 }
 
 interface GateRequest {
@@ -33,6 +48,7 @@ interface KillswitchState {
   hydrateError?: string
   dohActive?: boolean
   strict: boolean
+  allowLocal?: boolean
   containers: Record<string, ContainerConfig>
   probeTokens: Set<string>
 }
@@ -74,10 +90,13 @@ interface BlockEntry {
 declare function decide(state: KillswitchState, req: GateRequest): Verdict
 declare function probeToken(url: string): string | null
 declare function isProbeUrl(url: string): boolean
+declare function isLoopbackUrl(url: string): boolean
+declare function probeTraversed(via: { host?: string, port?: number } | null | undefined, c: ContainerConfig | undefined): boolean
 declare function usableProxy(c: ContainerConfig | undefined): boolean
 declare const R: {
   PROBE: string
   NOT_READY: string
+  LOOPBACK: string
   SPECULATIVE: string
   UNATTRIBUTED: string
   UNMANAGED: string
@@ -111,16 +130,18 @@ declare var fmt: {
   timeAgo(ts: number | undefined, now: number): string
   healthLabel(health: string | undefined): string
   healthClass(health: string | undefined): string
-  explainDetail(detail: string | undefined): string
-  rawDetail(detail: string | undefined): string
+  explainDetail(detail: string | undefined, custom?: boolean): string
+  rawDetail(detail: string | undefined, custom?: boolean): string
   reasonLabel(reason: string): string
   flagSrc(cc: string): string
   relayTags(r: Relay): string[]
+  exitName(c: ContainerConfig): string
 }
 
 // ui/picker.js
 interface PickerOptions {
   relays: Relay[]
+  customExits: Omit<CustomExit, 'password'>[]
   recents: string[]
   favorites: string[]
   currentHost: string
@@ -135,7 +156,9 @@ interface StateSnapshot {
   hydrateError: string
   dohActive: boolean
   strict: boolean
-  containers: Record<string, ContainerConfig>
+  allowLocal: boolean
+  /** Credentials are stripped before a config leaves the background page */
+  containers: Record<string, Omit<ContainerConfig, 'password'>>
   blockLog: BlockEntry[]
   relays: { ts: number, source: string, count: number, offline: OfflineAssignment[] }
   renamed: Record<string, string>
@@ -143,6 +166,7 @@ interface StateSnapshot {
   prefsAck: boolean
   recents: string[]
   favorites: string[]
+  customExits: Omit<CustomExit, 'password'>[]
   version: string
 }
 

@@ -53,7 +53,7 @@
       ? 'Bulkhead is starting up. All traffic is blocked until it finishes.'
       : c
         ? c.health === 'up'
-          ? `${who}: protected via ${c.host}.`
+          ? `${who}: protected via ${fmt.exitName(c)}.`
           : `${who}: ${fmt.healthLabel(c.health)}. Nothing is being sent direct.`
         : `${who}: not protected. Traffic uses your ordinary connection.`
     if (line === announced) return
@@ -142,8 +142,8 @@
     const p = document.createElement('p')
     p.className = 'sub'
     p.textContent = isPrivate
-      ? 'Private windows use your ordinary connection — private browsing hides nothing from the network. Give them a Mullvad server and they get the same treatment as everything else.'
-      : 'Tabs outside any container use your ordinary connection, and so do Bulkhead\'s own background requests. Give them a Mullvad server and they get the same treatment as everything else.'
+      ? 'Private windows use your ordinary connection — private browsing hides nothing from the network. Give them a server of their own and they get the same treatment as everything else.'
+      : 'Tabs outside any container use your ordinary connection, and so do Bulkhead\'s own background requests. Give them a server of their own and they get the same treatment as everything else.'
     view.append(p)
 
     const md = document.createElement('button')
@@ -174,7 +174,7 @@
 
     const p = document.createElement('p')
     p.className = 'sub'
-    p.textContent = 'This container uses your ordinary connection. Give it its own Mullvad server, and if that server ever stops working Bulkhead blocks this container instead of letting it fall back.'
+    p.textContent = 'This container uses your ordinary connection. Give it a server of its own, and if that server ever stops working Bulkhead blocks this container instead of letting it fall back.'
     view.append(p)
 
     const btn = document.createElement('button')
@@ -194,6 +194,7 @@
     view.append(head)
 
     const tunnelExit = c.host === 'mullvad-direct'
+    const custom = c.custom === true
     const card = document.createElement('div')
     card.className = 'exit-card'
 
@@ -209,10 +210,10 @@
     }
     const place = document.createElement('span')
     place.className = 'place grow'
-    place.textContent = tunnelExit ? 'Mullvad tunnel exit' : `${c.city}, ${c.country}`
+    place.textContent = tunnelExit || custom ? fmt.exitName(c) : `${c.city}, ${c.country}`
     const host = document.createElement('span')
     host.className = 'host mono'
-    host.textContent = tunnelExit ? `${c.ip}` : c.host
+    host.textContent = tunnelExit ? `${c.ip}` : custom ? `${c.ip}:${c.port}` : c.host
     where.append(place, host)
     card.append(where)
 
@@ -234,9 +235,9 @@
         note.textContent = 'Verifying this exit. Traffic here is blocked until it checks out.'
       } else {
         const lead = document.createElement('div')
-        lead.textContent = fmt.explainDetail(c.healthDetail) || 'This server is not answering.'
+        lead.textContent = fmt.explainDetail(c.healthDetail, c.custom) || 'This server is not answering.'
         note.append(lead)
-        const raw = fmt.rawDetail(c.healthDetail)
+        const raw = fmt.rawDetail(c.healthDetail, c.custom)
         if (raw) {
           const code = document.createElement('div')
           code.className = 'sub mono'
@@ -304,18 +305,21 @@
     /** @type {{ relays?: Relay[], error?: string }} */
     const res = await browser.runtime.sendMessage({ cmd: 'getRelays' }).catch(e => ({ error: String(e) }))
     loading.remove()
-    if (!res.relays || !snapshot) {
-      const err = document.createElement('div')
-      err.className = 'banner danger'
-      err.textContent = `Could not load the server list. ${res.error || 'Check the Mullvad app is connected.'}`
-      view.append(err)
-      return
-    }
+    if (!snapshot) return
 
     const errBox = document.createElement('div')
+    if (!res.relays) {
+      // Custom exits neither come from that list nor need the tunnel, so the
+      // picker still has something to offer.
+      const err = document.createElement('div')
+      err.className = 'banner danger'
+      err.textContent = 'Could not load the Mullvad server list. Check the Mullvad app is connected. Custom exits are still listed below.'
+      errBox.append(err)
+    }
 
     const picker = createPicker({
-      relays: res.relays,
+      relays: res.relays || [],
+      customExits: snapshot.customExits,
       recents: snapshot.recents,
       favorites: snapshot.favorites,
       currentHost,

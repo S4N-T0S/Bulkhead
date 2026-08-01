@@ -228,3 +228,12 @@ test('adaptPublic refuses ports that cannot become a valid ProxyInfo', () => {
   const [ok] = adaptPublic([publicEntry({ socks_port: 1081 })])
   assert.equal(ok.socksPort, 1081)
 })
+
+test('mergeAssignments treats credentials as config', () => {
+  const a = { ip: '127.0.0.1', port: 1080, socksHost: '', host: 'custom:x', city: '', country: '', cc: '', username: 'u', password: 'p', health: 'up' }
+  const same = mergeAssignments({ c1: a }, { c1: { ...a } })
+  assert.equal(same.containers.c1.health, 'up')
+  const { containers, stale } = mergeAssignments({ c1: a }, { c1: { ...a, password: 'q' } })
+  assert.equal(containers.c1.health, 'unknown')
+  assert.deepEqual(stale, ['c1'])
+})

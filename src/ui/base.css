@@ -136,7 +136,7 @@ button.iconbtn {
 }
 button.iconbtn:hover:not(:disabled) { color: var(--text); background: var(--well); }
 
-input[type="text"], input[type="search"] {
+input[type="text"], input[type="search"], input[type="number"], input[type="password"] {
   font: inherit;
   color: inherit;
   background: var(--well);

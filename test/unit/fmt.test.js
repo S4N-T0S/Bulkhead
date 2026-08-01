@@ -51,12 +51,44 @@ test('explainDetail turns Gecko constants into something a person can act on', (
   assert.equal(explainDetail(''), '')
   assert.equal(explainDetail(undefined), '')
   // already-plain text passes through untouched
-  assert.equal(explainDetail('exit is not a Mullvad server'), 'exit is not a Mullvad server')
+  assert.equal(explainDetail('Traffic came out somewhere else.'), 'Traffic came out somewhere else.')
+})
+
+test('no Gecko constant reaches the user as itself', () => {
+  // The passthrough at the end of explainDetail means anything unrecognised
+  // is shown verbatim, and rawDetail then suppresses the code line as a
+  // duplicate -- so a constant that slips the net is all the user gets.
+  for (const code of [
+    'NS_ERROR_PROXY_CONNECTION_REFUSED', 'NS_ERROR_NET_RESET',
+    'NS_ERROR_CONNECTION_REFUSED', 'NS_ERROR_ABORT', 'NS_BINDING_ABORTED',
+    'NS_ERROR_UNKNOWN_HOST', 'NS_SOMETHING_UNSEEN'
+  ]) {
+    for (const custom of [false, true]) {
+      const out = explainDetail(code, custom)
+      assert.notEqual(out, code, `${code} (custom=${custom}) reached the user raw`)
+      assert.match(out, /^[A-Z]/, code)
+    }
+  }
+})
+
+test('a custom exit is never told to check the Mullvad app', () => {
+  // every relay-table entry that names Mullvad needs a custom-table twin
+  for (const code of [
+    'NS_ERROR_PROXY_CONNECTION_REFUSED',
+    'NS_ERROR_UNKNOWN_PROXY_HOST',
+    'NS_ERROR_PROXY_AUTHENTICATION_FAILED'
+  ]) {
+    assert.doesNotMatch(explainDetail(code, true), /Mullvad/, code)
+  }
+  assert.match(explainDetail('NS_ERROR_PROXY_CONNECTION_REFUSED', true), /Check it is running/)
+  assert.match(explainDetail('NS_ERROR_PROXY_AUTHENTICATION_FAILED', true), /username and password/)
+  // the relay wording is untouched for relays
+  assert.match(explainDetail('NS_ERROR_PROXY_CONNECTION_REFUSED', false), /Mullvad app is not connected/)
 })
 
 test('rawDetail keeps the code only when it was replaced', () => {
   assert.equal(rawDetail('NS_ERROR_PROXY_CONNECTION_REFUSED'), 'NS_ERROR_PROXY_CONNECTION_REFUSED')
-  assert.equal(rawDetail('exit is not a Mullvad server'), '')
+  assert.equal(rawDetail('Traffic came out somewhere else.'), '')
   assert.equal(rawDetail(undefined), '')
 })
 

@@ -214,8 +214,16 @@
     /** @type {string[]} */
     const stale = []
     for (const [id, n] of Object.entries(next)) {
+      if (!n || typeof n !== 'object') continue
       const p = prev[id]
-      if (p && p.ip === n.ip && p.port === n.port && p.socksHost === n.socksHost) {
+      // Credentials count as config: a custom exit whose password changed
+      // must be re-proven, not trusted on the old verdict. So does the host
+      // -- a custom exit at 10.64.0.1:1080 and the Mullvad tunnel endpoint
+      // are the same address under different rules, and the reachability
+      // verdict one earns does not answer the question the other is asked.
+      if (p && p.ip === n.ip && p.port === n.port && p.socksHost === n.socksHost
+        && p.host === n.host && p.custom === n.custom
+        && p.username === n.username && p.password === n.password) {
         containers[id] = {
           ...n,
           health: p.health,
@@ -257,7 +265,9 @@
    * @returns {string}
    */
   function configKey (c) {
-    return c ? `${c.ip}:${c.port}:${c.socksHost}` : ''
+    // Never logged or persisted -- lives in in-memory maps only, so the
+    // credentials can safely be part of the identity.
+    return c ? `${c.ip}:${c.port}:${c.socksHost}:${c.username || ''}:${c.password || ''}` : ''
   }
 
   /**

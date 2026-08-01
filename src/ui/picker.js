@@ -24,6 +24,7 @@
     /** @type {{ ownedOnly: boolean }} */
     const filters = { ownedOnly: false }
     const favorites = new Set(opts.favorites)
+    const customs = Array.isArray(opts.customExits) ? opts.customExits : []
 
     const filterDefs = /** @type {const} */ ([
       ['Mullvad-owned', () => { filters.ownedOnly = !filters.ownedOnly }, () => filters.ownedOnly]
@@ -122,12 +123,36 @@
       return wrap
     }
 
+    // Same shape as a relay row, minus the star: favourites order the relay
+    // list, while custom exits already sit in their own pinned group.
+    /** @param {Omit<CustomExit, 'password'>} e @returns {HTMLElement} */
+    function customRow (e) {
+      const b = document.createElement('button')
+      b.className = 'picker-row'
+      b.dataset.host = `custom:${e.id}`
+      if (opts.currentHost === `custom:${e.id}`) b.setAttribute('aria-current', 'true')
+      const name = document.createElement('span')
+      name.textContent = e.label
+      const sub = document.createElement('span')
+      sub.className = 'sub'
+      sub.textContent = `${e.host}:${e.port}`
+      b.append(name, sub)
+      b.addEventListener('click', () => opts.onPick(`custom:${e.id}`))
+      return b
+    }
+
     function renderList () {
       const q = search.value
       const matches = relaylib.searchRelays(opts.relays, q, filters)
+      const needle = q.trim().toLowerCase()
+      const customMatches = filters.ownedOnly
+        ? []
+        : customs.filter(e => !needle
+          || String(e.label || '').toLowerCase().includes(needle)
+          || String(e.host || '').toLowerCase().includes(needle))
       list.textContent = ''
 
-      if (!matches.length) {
+      if (!matches.length && !customMatches.length) {
         const empty = document.createElement('div')
         empty.className = 'picker-empty'
         empty.textContent = 'No servers match.'
@@ -165,6 +190,14 @@
           frag.append(head)
           for (const r of quick) frag.append(row(/** @type {Relay} */ (r)))
         }
+      }
+
+      if (customMatches.length) {
+        const head = document.createElement('div')
+        head.className = 'picker-city'
+        head.textContent = 'Custom exits'
+        frag.append(head)
+        for (const e of customMatches) frag.append(customRow(e))
       }
 
       for (const g of relaylib.groupByLocation(matches)) {

@@ -8,16 +8,16 @@
 
   // First sentence is always what to do next; the explanation follows.
   /** @type {Record<string, string>} */
-  const EXPLAIN = {
+  const EXPLAIN = Object.assign(Object.create(null), {
     'proxy-unverified': 'Nothing to do — the page will load on its own once the check passes, usually within a second or two. Bulkhead checks a container\'s server before it lets anything through, and this check has not finished. Normal right after Firefox starts or after Mullvad reconnects.',
-    'proxy-down': 'Check the Mullvad app is connected, then press Re-check and retry. This container\'s Mullvad server did not answer, so Bulkhead cancelled the request rather than let Firefox find another way out. Servers go quiet for a few seconds on every reconnect, so this often clears by itself.',
+    'proxy-down': 'Check this container\'s server is running — for a Mullvad exit, that the app is connected — then press Re-check and retry. The server did not answer, so Bulkhead cancelled the request rather than let Firefox find another way out. On a Mullvad exit this often clears by itself — its servers go quiet for a few seconds on every reconnect.',
     'misrouted': 'Press Re-check and retry — if it keeps happening, pick a different server in Settings. The server answered, but traffic came out at a different exit than the one you chose.',
     'not-ready': 'Wait a moment, then press Re-check and retry. Firefox had only just started and Bulkhead had not finished loading its settings. Until it has, it blocks everything rather than guess which containers are meant to be protected.',
     'unattributed': 'If this keeps happening on a site you trust, turn off Strict mode in Bulkhead\'s settings. Firefox did not say which container this request belonged to, so there was no way to tell whether it came from a protected one.',
     'speculative': 'Nothing to do — this was not a page you asked for. Firefox was connecting to a site in advance, in case you clicked something. Those early connections do not reliably say which container they belong to, so Strict mode turns them away.',
-    'no-proxy': 'Open Settings and pick a Mullvad server for this container. It is set to be protected, but there is no working server saved for it, so there is nowhere for its traffic to go.',
+    'no-proxy': 'Open Settings and pick a server for this container. It is set to be protected, but there is no working server saved for it, so there is nowhere for its traffic to go.',
     'error': 'Press Re-check and retry. Something went wrong inside Bulkhead itself, and it blocked rather than let traffic through — so nothing escaped. If it keeps happening, "Recently blocked" in Settings has the details worth reporting.'
-  }
+  })
 
   /** @param {string} id @returns {HTMLElement} */
   const $ = id => /** @type {HTMLElement} */ (document.getElementById(id))
@@ -64,7 +64,7 @@
     retry.textContent = 'Re-check and retry'
     // with no container there is nothing to re-check
     $('status').textContent = c
-      ? `Still blocked. ${fmt.explainDetail(c.healthDetail) || ''}`.trim()
+      ? `Still blocked. ${fmt.explainDetail(c.healthDetail, c.custom) || ''}`.trim()
       : container
         ? 'This container no longer has a server set.'
         : 'This request had no container, so there is nothing to re-check. Turn off Strict mode in Settings if you need it through.'
@@ -79,7 +79,13 @@
     const poll = setInterval(async () => {
       const st = await browser.runtime.sendMessage({ cmd: 'getState' })
       const c = st.containers[container]
-      if (!c || c.health !== 'up') return
+      // Unassigned while this page sat open: there is no exit left to come
+      // back, so stop asking.
+      if (!c) {
+        clearInterval(poll)
+        return
+      }
+      if (c.health !== 'up') return
       clearInterval(poll)
       if (reason === 'proxy-unverified' && safeTarget) {
         location.replace(safeTarget)

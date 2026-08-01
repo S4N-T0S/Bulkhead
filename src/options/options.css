@@ -118,3 +118,20 @@ dialog .picker { margin-top: 10px; }
 dialog .picker-list { max-height: 46vh; }
 #picker-error:empty { display: none; }
 #picker-error { margin-top: 10px; }
+
+#custom-list:empty { display: none; }
+#custom-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.custom-exit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--well);
+  border-radius: var(--radius-s);
+}
+.custom-exit .addr { white-space: nowrap; }
+
+#custom-form input { flex: 1 1 130px; width: auto; min-width: 0; }
+#custom-form input[type="number"] { flex: 0 1 90px; }
+#custom-error:empty { display: none; }
+#custom-error { margin-top: 10px; }

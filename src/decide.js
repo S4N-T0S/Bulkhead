@@ -15,6 +15,7 @@
   const R = {
     PROBE: 'probe',
     NOT_READY: 'not-ready',
+    LOOPBACK: 'loopback',
     SPECULATIVE: 'speculative',
     UNATTRIBUTED: 'unattributed',
     UNMANAGED: 'unmanaged',
@@ -51,6 +52,50 @@
     } catch {
       return false
     }
+  }
+
+  // Addresses that cannot leave this machine and cannot be redirected
+  // anywhere by anyone: the literal loopback range, plus the one name for it
+  // Firefox resolves internally. Deliberately narrower than "private
+  // address" -- 192.168/16 and friends are real networks with real leak
+  // potential -- and narrower than RFC 6761, which would also admit
+  // *.localhost: those names only stay on-machine while
+  // network.dns.offline-localhost holds its default, and a pref this cannot
+  // read is not something to hang an exemption on. The URL parser has
+  // already normalised IPv4 spellings (127.1, octal) and IPv6 forms by the
+  // time hostname is read.
+  /** @param {string} url @returns {boolean} */
+  function isLoopbackUrl (url) {
+    if (typeof url !== 'string') return false
+    let host
+    try {
+      host = new URL(url).hostname
+    } catch {
+      return false
+    }
+    if (host.endsWith('.')) host = host.slice(0, -1)
+    if (host === 'localhost') return true
+    if (host === '[::1]') return true
+    const m = host.match(/^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+    return !!m && m.slice(1).every(n => Number(n) <= 255)
+  }
+
+  // Whether the proxy Firefox reports having carried a request is the one
+  // the assignment asks for. A refused SOCKS connection is failed over, and
+  // that failover ends at a direct connection while
+  // network.proxy.failover_direct is true -- which answers with a perfectly
+  // good 200 from the user's own address. Reachability alone therefore
+  // proves nothing about the proxy; this is what proves it. Firefox echoes
+  // back the ProxyInfo it was given, so compare hostnames the way hostnames
+  // compare.
+  /**
+   * @param {{ host?: string, port?: number } | null | undefined} via
+   * @param {ContainerConfig | undefined} c
+   * @returns {boolean}
+   */
+  function probeTraversed (via, c) {
+    if (!via || !c || typeof via.host !== 'string') return false
+    return via.host.toLowerCase() === String(c.ip).toLowerCase() && via.port === (c.port || 1080)
   }
 
   // Whether a stored assignment can actually be routed. Both listeners must
@@ -90,7 +135,15 @@
     //    when a pile of tabs reloads at once. Fail closed through it.
     if (!state.ready) return v(BLOCK, R.NOT_READY)
 
-    // 2. Speculative connections carry unreliable tab information, so their
+    // 2. Loopback, once the user has opted in. Sits above the speculative
+    //    and unattributed rules on purpose: whoever issued this request, its
+    //    destination is this machine, and blocking it breaks every sign-in
+    //    flow that hands a token to an app listening on a local port. After
+    //    the ready check, so the toggle is only honoured once it has
+    //    actually been read.
+    if (state.allowLocal === true && isLoopbackUrl(req.url)) return v(ALLOW, R.LOOPBACK)
+
+    // 3. Speculative connections carry unreliable tab information, so their
     //    cookieStoreId cannot be trusted. Strict mode refuses to route them
     //    on a guess.
     if (req.type === 'speculative' && state.strict) return v(BLOCK, R.SPECULATIVE)
@@ -99,7 +152,7 @@
     const known = typeof id === 'string' && id !== ''
     const c = known ? state.containers[id] : undefined
 
-    // 3. A container we manage. Deliberately checked before the strict-mode
+    // 4. A container we manage. Deliberately checked before the strict-mode
     //    branches, so relaxing strict can never re-open a container whose
     //    proxy is down; strict governs only the unattributable cases below.
     if (c) {
@@ -117,12 +170,12 @@
       return v(ALLOW, R.OK)
     }
 
-    // 4. No container identity at all. It cannot be proven that this did not
+    // 5. No container identity at all. It cannot be proven that this did not
     //    originate in a managed container, so strict mode refuses it rather
     //    than let it take the default route.
     if (!known) return state.strict ? v(BLOCK, R.UNATTRIBUTED) : v(ALLOW, R.UNATTRIBUTED)
 
-    // 5. A container we do not manage. Not our business -- this is what
+    // 6. A container we do not manage. Not our business -- this is what
     //    keeps the extension inert for ordinary browsing.
     return v(ALLOW, R.UNMANAGED)
   }
@@ -132,7 +185,7 @@
     return { verdict, reason }
   }
 
-  const api = { decide, probeToken, isProbeUrl, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
+  const api = { decide, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

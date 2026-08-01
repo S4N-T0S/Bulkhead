@@ -1,0 +1,51 @@
+name: Bug report
+description: Something is blocked that shouldn't be, or not blocked that should be
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a way to make traffic escape its assigned exit, please
+        report it privately instead — Security → Report a vulnerability.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Bulkhead and Firefox versions
+      placeholder: Bulkhead 0.1.0, Firefox 154.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tunnel
+    attributes:
+      label: Was the Mullvad tunnel up at the time?
+      options: ['Yes', 'No', 'It dropped during the problem', "Don't know"]
+    validations:
+      required: true
+
+  - type: input
+    id: prefs
+    attributes:
+      label: network.proxy.failover_direct and network.trr.mode
+      description: Both values from about:config. Nearly every routing report comes down to these.
+      placeholder: failover_direct=false, trr.mode=5
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Recently blocked
+      description: >
+        The relevant rows from Settings → Recently blocked. Redact anything
+        in a URL you would rather not publish.
+      render: text

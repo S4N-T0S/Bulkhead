@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # this is what keeps the pinned action SHAs from going stale
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+
+  # build-time only, and the tree is large enough that ungrouped PRs would be
+  # pure noise
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        patterns: ['*']

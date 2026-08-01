@@ -1,0 +1,103 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # a run on main may produce the artifact a release is cut from
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.x', '24.x']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # no package currently has an install script; keep it that way
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm run lint:amo
+      - run: npm run typecheck
+      - run: npm test
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: checks
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.x'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      # AMO validates the zip, not src/, so lint what actually ships
+      - run: npx --no-install addons-linter dist/bulkhead-*.zip
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bulkhead-package
+          path: dist/bulkhead-*.zip
+          if-no-files-found: error
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: checks
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.x'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - id: firefox
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="$(curl -fsS --retry 3 --retry-all-errors \
+            https://product-details.mozilla.org/1.0/firefox_versions.json \
+            | jq -er .FIREFOX_DEVEDITION)"
+          [ -n "$v" ] && [ "$v" != "null" ]
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - id: ffcache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .cache/firefox
+          key: firefox-devedition-${{ steps.firefox.outputs.version }}-linux64
+      - run: npm run setup
+        env:
+          FIREFOX_VERSION: ${{ steps.firefox.outputs.version }}
+      # save even when the run fails, so a red build does not re-download 90 MB
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: always() && steps.ffcache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/firefox
+          key: firefox-devedition-${{ steps.firefox.outputs.version }}-linux64
+      # the killswitch and hardening cases run anywhere; the relay cases need
+      # a Mullvad tunnel and skip themselves. Pinned rather than probed so CI
+      # never branches on a live third-party response.
+      - run: npm run test:e2e
+        env:
+          MOZ_HEADLESS: '1'
+          BULKHEAD_E2E_TUNNEL: '0'

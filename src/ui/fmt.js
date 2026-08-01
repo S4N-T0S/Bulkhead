@@ -22,7 +22,7 @@
   /** @type {Record<string, string>} */
   const HEALTH_LABEL = {
     up: 'Protected',
-    down: 'Blocked — proxy down',
+    down: 'Blocked — server down',
     misrouted: 'Blocked — wrong exit',
     unknown: 'Blocked — checking'
   }
@@ -32,7 +32,7 @@
     if (!health) return 'Not protected'
     // An unrecognised state must not render as the most reassuring label in
     // the set; fail loud instead.
-    return HEALTH_LABEL[health] || 'Blocked — Bulkhead is unsure'
+    return HEALTH_LABEL[health] || 'Blocked — unknown state'
   }
 
   /** @param {string | undefined} health @returns {string} */
@@ -65,7 +65,9 @@
   function explainDetail (detail) {
     if (!detail) return ''
     if (ERROR_TEXT[detail]) return ERROR_TEXT[detail]
-    if (detail.startsWith('expected ')) return 'Your traffic came out at a different server than this container is set to use, so it was blocked.'
+    // no ", so it was blocked" here: this renders under a pill or heading
+    // that already says Blocked, and saying it twice reads as a stutter
+    if (detail.startsWith('expected ')) return 'Traffic came out at a different server than the one set for this container.'
     if (/timed out|timeout/i.test(detail)) return 'This server did not answer in time.'
     if (/NetworkError|Failed to fetch/i.test(detail)) return 'This server could not be reached.'
     if (detail.startsWith('NS_ERROR')) return 'The connection to this server failed.'
@@ -82,9 +84,11 @@
     'proxy-down': 'Server not answering',
     'proxy-unverified': 'Server not checked yet',
     'misrouted': 'Came out at the wrong server',
-    'not-ready': 'Firefox was still starting',
+    // Bulkhead's own startup, not the browser's: the same state shows up on
+    // a plain extension reload, when Firefox never restarted.
+    'not-ready': 'Bulkhead was still starting',
     'unattributed': 'No container given',
-    'speculative': 'Early connection',
+    'speculative': 'Speculative connection',
     'no-proxy': 'No server set',
     'error': 'Bulkhead error — blocked to be safe'
   }

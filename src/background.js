@@ -103,6 +103,16 @@ async function hydrate () {
     // Health is never persisted: a restarted browser trusts nothing.
     const { containers, stale } = relaylib.mergeAssignments(state.containers, s.containers || {})
     state.containers = containers
+    // Notification bookkeeping follows the assignments. A leftover entry is
+    // not just dead weight: lastNotified still holding 'down' for an id that
+    // was unassigned would swallow the warning the next time that context is
+    // assigned and fails.
+    for (const id of Object.keys(lastNotified)) {
+      if (!(id in containers) || stale.includes(id)) delete lastNotified[id]
+    }
+    for (const id of Object.keys(renamed)) {
+      if (!(id in containers) || stale.includes(id)) delete renamed[id]
+    }
     state.ready = true
     state.hydrateError = ''
     log('[bulkhead] ready, managed:', Object.keys(containers))
@@ -450,12 +460,12 @@ function badgeTab (tab) {
     text = '!'
     color = '#c50042'
     const why = fmt.explainDetail(c.healthDetail)
-    title = `Blocked — ${c.health === 'misrouted' ? 'wrong exit' : 'proxy down'}. ${why}`.trim()
+    title = `Blocked — ${c.health === 'misrouted' ? 'wrong exit' : 'server down'}. ${why}`.trim()
   } else if (managing) {
     // managed elsewhere, but not here -- say so rather than look identical
     // to a verified tab
     text = '·'
-    title = 'Not protected — this context has no exit assigned'
+    title = 'Not protected — no exit assigned here'
   }
 
   browser.browserAction.setBadgeText({ text, tabId: tab.id })
@@ -505,6 +515,8 @@ async function fetchJson (url, timeoutMs) {
     cache: 'no-store',
     credentials: 'omit',
     referrer: 'no-referrer',
+    // same stance as the probe: a redirected list is somebody else's list
+    redirect: 'error',
     signal: AbortSignal.timeout(timeoutMs)
   })
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
@@ -608,10 +620,10 @@ async function assign (cookieStoreId, host) {
     try {
       memo = await refreshRelays(false)
     } catch (e) {
-      return { ok: false, error: `could not load the server list: ${e instanceof Error ? e.message : String(e)}` }
+      return { ok: false, error: `Could not load the server list: ${e instanceof Error ? e.message : String(e)}` }
     }
     const relay = relaylib.findRelay(memo.relays, host)
-    if (!relay) return { ok: false, error: `unknown server ${host}` }
+    if (!relay) return { ok: false, error: `Unknown server ${host}.` }
 
     // Resolve once here, at assignment time, and store the literal address.
     // Resolving the hostname per request would tell the DNS resolver which
@@ -631,7 +643,7 @@ async function assign (cookieStoreId, host) {
       return {
         ok: false,
         error: state.dohActive
-          ? `Could not look up ${relay.socksName}. DNS-over-HTTPS is switched on, and at its strictest setting Firefox will not ask Mullvad's resolver — so this name cannot be found. Set network.trr.mode to 5 (see the setup card above), then try again.`
+          ? `Could not look up ${relay.socksName}. DNS-over-HTTPS is switched on, and at its strictest setting Firefox will not ask Mullvad's resolver — so this name cannot be found. Set network.trr.mode to 5 (the setup card in Settings walks through it), then try again.`
           : `Could not look up ${relay.socksName}. Check the Mullvad app is connected — these names only exist inside the tunnel.`
       }
     }
@@ -643,7 +655,7 @@ async function assign (cookieStoreId, host) {
       return {
         ok: false,
         error: state.dohActive
-          ? `${relay.socksName} was answered from outside the tunnel, so it was refused. DNS-over-HTTPS is switched on — set network.trr.mode to 5 (see the setup card above), then try again.`
+          ? `${relay.socksName} was answered from outside the tunnel, so it was refused. DNS-over-HTTPS is switched on — set network.trr.mode to 5 (the setup card in Settings walks through it), then try again.`
           : `${relay.socksName} was answered from outside the tunnel, so it was refused. Check the Mullvad app is connected.`
       }
     }
@@ -659,7 +671,7 @@ async function assign (cookieStoreId, host) {
     }
   }
 
-  if (!usableProxy(config)) return { ok: false, error: 'refusing an unroutable proxy configuration' }
+  if (!usableProxy(config)) return { ok: false, error: 'Refused an unroutable proxy configuration.' }
 
   return serialize(async () => {
     const s = await browser.storage.local.get(['containers', 'recents'])

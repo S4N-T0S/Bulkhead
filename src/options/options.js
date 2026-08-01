@@ -59,7 +59,7 @@
       mark.className = 'badmark'
       mark.textContent = '✗ '
       doh.append(mark, document.createTextNode(
-        'DNS-over-HTTPS is active right now — Firefox answered a lookup from a trusted recursive resolver. This one is not set.'
+        'DNS-over-HTTPS is active — Firefox answered a lookup from a trusted recursive resolver, so this pref is not at 5.'
       ))
     } else {
       doh.textContent = 'No DoH seen on the last check. Firefox exposes no way to read this pref directly, so this is not a confirmation — only the absence of a warning.'
@@ -286,7 +286,7 @@
       actionRow.className = 'row'
       if (c) {
         const check = document.createElement('button')
-        check.textContent = 'Check'
+        check.textContent = 'Re-check'
         check.addEventListener('click', async () => {
           check.style.minWidth = `${check.offsetWidth}px`
           check.disabled = true
@@ -300,7 +300,7 @@
         const stop = document.createElement('button')
         stop.className = 'quiet danger'
         stop.textContent = ident.colorCode ? 'Stop proxying' : 'Use direct'
-        stop.title = 'Remove this exit — traffic here goes over your normal connection'
+        stop.title = 'Remove this exit — traffic here goes over your ordinary connection'
         stop.addEventListener('click', async () => {
           stop.disabled = true
           await browser.runtime.sendMessage({ cmd: 'unassign', cookieStoreId: ident.cookieStoreId })
@@ -353,7 +353,9 @@
     const ident = identities.find(i => i.cookieStoreId === cookieStoreId)
     $('picker-title').textContent = ident
       ? `Exit for ${ident.name}`
-      : cookieStoreId === 'firefox-default' ? 'Exit for default traffic' : 'Choose exit'
+      : cookieStoreId === 'firefox-default'
+        ? 'Exit for default traffic'
+        : cookieStoreId === 'firefox-private' ? 'Exit for private windows' : 'Choose exit'
     const mount = $('picker-mount')
     const errBox = $('picker-error')
     errBox.textContent = ''
@@ -363,7 +365,7 @@
     const res = await browser.runtime.sendMessage({ cmd: 'getRelays' }).catch(e => ({ error: String(e) }))
     if (!res.relays) {
       mount.textContent = ''
-      showPickerError(`Could not load the server list. ${res.error || 'Is the Mullvad tunnel up?'}`)
+      showPickerError(`Could not load the server list. ${res.error || 'Check the Mullvad app is connected.'}`)
       return
     }
 
@@ -475,7 +477,7 @@
     const el = $('block-log')
     el.textContent = ''
     const names = new Map(identities.map(i => [i.cookieStoreId, i.name]))
-    names.set('firefox-default', 'Default')
+    names.set('firefox-default', 'No container')
     names.set('firefox-private', 'Private windows')
 
     if (!snapshot.blockLog.length) {
@@ -487,7 +489,7 @@
 
     const table = document.createElement('table')
     const head = table.createTHead().insertRow()
-    for (const h of ['Time', 'Why', 'Context', 'Type', 'Request']) {
+    for (const h of ['Time', 'Why', 'Container', 'Type', 'Request']) {
       const th = document.createElement('th')
       th.textContent = h
       head.append(th)

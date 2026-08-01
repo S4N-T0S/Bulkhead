@@ -55,7 +55,7 @@
         ? c.health === 'up'
           ? `${who}: protected via ${c.host}.`
           : `${who}: ${fmt.healthLabel(c.health)}. Nothing is being sent direct.`
-        : `${who}: not protected. Traffic uses your normal connection.`
+        : `${who}: not protected. Traffic uses your ordinary connection.`
     if (line === announced) return
     announced = line
     const el = document.getElementById('status-line')
@@ -68,7 +68,10 @@
     if (!snapshot) return
     view.textContent = ''
     if (!snapshot.ready) {
-      msg('Starting up — verifying proxies…')
+      msg('Starting up — traffic stays blocked until settings load.')
+      // hydrate keeps retrying on its own; without this line a persistent
+      // storage failure is indistinguishable from a slow start
+      if (snapshot.hydrateError) msg(`Cannot read settings: ${snapshot.hydrateError} — retrying.`)
       return
     }
     if (!identity && cookieStoreId !== 'firefox-default' && cookieStoreId !== 'firefox-private') {
@@ -90,7 +93,7 @@
     strip.className = 'banner warn setup-strip'
     strip.textContent = snapshot.dohActive
       ? 'DNS-over-HTTPS is on — it links your containers back together. Fix it →'
-      : 'Setup unfinished — two Firefox settings still need setting →'
+      : 'Setup unfinished — two about:config settings still to set →'
     strip.addEventListener('click', () => {
       browser.runtime.openOptionsPage()
       window.close()
@@ -139,7 +142,7 @@
     const p = document.createElement('p')
     p.className = 'sub'
     p.textContent = isPrivate
-      ? 'Private windows use your ordinary connection. Private browsing hides history from this computer — it hides nothing from the network. Give them a Mullvad server and they get the same treatment as everything else.'
+      ? 'Private windows use your ordinary connection — private browsing hides nothing from the network. Give them a Mullvad server and they get the same treatment as everything else.'
       : 'Tabs outside any container use your ordinary connection, and so do Bulkhead\'s own background requests. Give them a Mullvad server and they get the same treatment as everything else.'
     view.append(p)
 
@@ -153,7 +156,7 @@
       await refresh()
     })
     const pick = document.createElement('button')
-    pick.textContent = 'Pick a server…'
+    pick.textContent = 'Choose server…'
     pick.addEventListener('click', () => openPicker(''))
     const actions = document.createElement('div')
     actions.className = 'row wrap'
@@ -231,7 +234,7 @@
         note.textContent = 'Verifying this exit. Traffic here is blocked until it checks out.'
       } else {
         const lead = document.createElement('div')
-        lead.textContent = fmt.explainDetail(c.healthDetail) || 'This exit is not answering.'
+        lead.textContent = fmt.explainDetail(c.healthDetail) || 'This server is not answering.'
         note.append(lead)
         const raw = fmt.rawDetail(c.healthDetail)
         if (raw) {
@@ -261,7 +264,7 @@
     const stop = document.createElement('button')
     stop.className = 'quiet danger'
     stop.textContent = identity ? 'Stop proxying' : 'Use direct'
-    stop.title = 'Remove this exit — traffic here goes over your normal connection'
+    stop.title = 'Remove this exit — traffic here goes over your ordinary connection'
     stop.addEventListener('click', async () => {
       stop.disabled = true
       await browser.runtime.sendMessage({ cmd: 'unassign', cookieStoreId })
@@ -287,7 +290,9 @@
     })
     const title = document.createElement('span')
     title.className = 'sub grow'
-    title.textContent = identity ? `Exit for ${identity.name}` : 'Exit for default traffic'
+    title.textContent = identity
+      ? `Exit for ${identity.name}`
+      : cookieStoreId === 'firefox-private' ? 'Exit for private windows' : 'Exit for default traffic'
     back.append(backBtn, title)
     view.append(back)
 
@@ -302,7 +307,7 @@
     if (!res.relays || !snapshot) {
       const err = document.createElement('div')
       err.className = 'banner danger'
-      err.textContent = `Could not load the server list. ${res.error || 'Is the Mullvad tunnel up?'}`
+      err.textContent = `Could not load the server list. ${res.error || 'Check the Mullvad app is connected.'}`
       view.append(err)
       return
     }
@@ -336,7 +341,7 @@
     picker.focus()
   }
 
-  init().catch(e => msg(`Something went wrong: ${e instanceof Error ? e.message : String(e)}`))
+  init().catch(e => msg(`Bulkhead could not load: ${e instanceof Error ? e.message : String(e)}`))
 
   window.addEventListener('unload', () => window.clearInterval(refreshTimer))
 })()

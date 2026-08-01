@@ -9,9 +9,9 @@
   // First sentence is always what to do next; the explanation follows.
   /** @type {Record<string, string>} */
   const EXPLAIN = {
-    'proxy-unverified': 'Nothing to do — this should clear itself in a second or two. Bulkhead checks a container\'s server before it lets anything through, and the check has not finished. This is normal right after Firefox starts, or after Mullvad reconnects. The page will load on its own when the check passes.',
+    'proxy-unverified': 'Nothing to do — the page will load on its own once the check passes, usually within a second or two. Bulkhead checks a container\'s server before it lets anything through, and this check has not finished. Normal right after Firefox starts or after Mullvad reconnects.',
     'proxy-down': 'Check the Mullvad app is connected, then press Re-check and retry. This container\'s Mullvad server did not answer, so Bulkhead cancelled the request rather than let Firefox find another way out. Servers go quiet for a few seconds on every reconnect, so this often clears by itself.',
-    'misrouted': 'Press Re-check and retry — if it keeps happening, pick a different server in Settings. The server answered, but your traffic came out somewhere else, so this container would not have looked like the identity you set up for it.',
+    'misrouted': 'Press Re-check and retry — if it keeps happening, pick a different server in Settings. The server answered, but traffic came out at a different exit than the one you chose.',
     'not-ready': 'Wait a moment, then press Re-check and retry. Firefox had only just started and Bulkhead had not finished loading its settings. Until it has, it blocks everything rather than guess which containers are meant to be protected.',
     'unattributed': 'If this keeps happening on a site you trust, turn off Strict mode in Bulkhead\'s settings. Firefox did not say which container this request belonged to, so there was no way to tell whether it came from a protected one.',
     'speculative': 'Nothing to do — this was not a page you asked for. Firefox was connecting to a site in advance, in case you clicked something. Those early connections do not reliably say which container they belong to, so Strict mode turns them away.',
@@ -27,7 +27,7 @@
   $('reason').title = reason
   $('reason').classList.remove('mono')
   $('url').textContent = url || '—'
-  $('explain').textContent = EXPLAIN[reason] || 'Bulkhead blocked this request but did not record why. Press Re-check and retry.'
+  $('explain').textContent = EXPLAIN[reason] || 'Press Re-check and retry. Bulkhead blocked this request but did not record why.'
   browser.runtime.sendMessage({ cmd: 'blockedShown', container, reason }).catch(() => null)
 
   if (container === 'firefox-default') {
@@ -73,19 +73,23 @@
   // The background probes on its own schedule; when the exit comes back, say
   // so instead of leaving a stale error page. On the unverified path there
   // was never a failure to report, so recovery just continues the
-  // navigation the user already asked for.
-  const poll = setInterval(async () => {
-    if (!container) return
-    const st = await browser.runtime.sendMessage({ cmd: 'getState' })
-    const c = st.containers[container]
-    if (!c || c.health !== 'up') return
-    clearInterval(poll)
-    if (reason === 'proxy-unverified' && safeTarget) {
-      location.replace(safeTarget)
-      return
-    }
-    $('status').textContent = 'exit verified'
-    retry.textContent = safeTarget ? 'Exit is back — reload page' : 'Exit is back'
-    retry.disabled = false
-  }, 2000)
+  // navigation the user already asked for. With no container there is
+  // nothing that can recover, so no poll at all.
+  if (container) {
+    const poll = setInterval(async () => {
+      const st = await browser.runtime.sendMessage({ cmd: 'getState' })
+      const c = st.containers[container]
+      if (!c || c.health !== 'up') return
+      clearInterval(poll)
+      if (reason === 'proxy-unverified' && safeTarget) {
+        location.replace(safeTarget)
+        return
+      }
+      // the button carries the news; a second announcement next to it would
+      // just compete, and any stale "Still blocked" line is now wrong
+      $('status').textContent = ''
+      retry.textContent = safeTarget ? 'Exit is back — reload page' : 'Exit is back'
+      retry.disabled = false
+    }, 2000)
+  }
 })()

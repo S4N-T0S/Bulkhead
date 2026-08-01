@@ -32,8 +32,11 @@ test('every blocking state says so in words, not just in colour', () => {
 test('an unrecognised health value fails loud rather than reassuring', () => {
   // the dangerous regression is a future state rendering as "Not protected"
   // (grey, sounds inert) or worse as "Protected"
-  assert.match(healthLabel('weird'), /^Blocked/)
-  assert.match(healthLabel('weird'), /unsure/)
+  const fallback = healthLabel('weird')
+  assert.match(fallback, /^Blocked/)
+  for (const h of ['up', 'down', 'misrouted', 'unknown']) {
+    assert.notEqual(fallback, healthLabel(h), 'must not borrow a known label')
+  }
   assert.equal(healthClass('weird'), 'down')
   assert.equal(healthClass('misrouted'), 'misrouted')
   assert.equal(healthClass(undefined), 'off')

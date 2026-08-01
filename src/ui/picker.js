@@ -90,6 +90,7 @@
         const tag = document.createElement('span')
         tag.className = 'tag'
         tag.textContent = t
+        if (t === 'owned') tag.title = 'Runs on Mullvad-owned hardware'
         b.append(tag)
       }
 

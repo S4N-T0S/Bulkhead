@@ -50,6 +50,7 @@
 
   const retry = /** @type {HTMLButtonElement} */ ($('retry'))
   retry.addEventListener('click', async () => {
+    retry.style.minWidth = `${retry.offsetWidth}px`
     retry.disabled = true
     retry.textContent = 'Checking…'
     if (container) await browser.runtime.sendMessage({ cmd: 'probe', cookieStoreId: container })

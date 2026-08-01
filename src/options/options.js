@@ -288,6 +288,7 @@
         const check = document.createElement('button')
         check.textContent = 'Check'
         check.addEventListener('click', async () => {
+          check.style.minWidth = `${check.offsetWidth}px`
           check.disabled = true
           check.textContent = '…'
           await browser.runtime.sendMessage({ cmd: 'probe', cookieStoreId: ident.cookieStoreId })
@@ -458,6 +459,7 @@
 
   $('refresh-relays').addEventListener('click', async () => {
     const btn = /** @type {HTMLButtonElement} */ ($('refresh-relays'))
+    btn.style.minWidth = `${btn.offsetWidth}px`
     btn.disabled = true
     btn.textContent = 'Refreshing…'
     await browser.runtime.sendMessage({ cmd: 'getRelays', force: true }).catch(() => null)

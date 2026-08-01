@@ -249,6 +249,7 @@
     const recheck = document.createElement('button')
     recheck.textContent = 'Re-check'
     recheck.addEventListener('click', async () => {
+      recheck.style.minWidth = `${recheck.offsetWidth}px`
       recheck.disabled = true
       recheck.textContent = 'Checking…'
       await browser.runtime.sendMessage({ cmd: 'probe', cookieStoreId })

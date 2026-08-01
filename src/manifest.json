@@ -8,7 +8,7 @@
 
   "browser_specific_settings": {
     "gecko": {
-      "id": "bulkhead@s4nt0s",
+      "id": "bulkhead@s4nt0s.eu",
       "strict_min_version": "142.0",
       "data_collection_permissions": {
         "required": ["none"]

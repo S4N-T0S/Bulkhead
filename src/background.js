@@ -318,19 +318,40 @@ browser.webRequest.onErrorOccurred.addListener((d) => {
   if (!c || !d.cookieStoreId) return
 
   if (HARD_PROXY_ERRORS.has(d.error)) {
-    markHealth(d.cookieStoreId, 'down', d.error)
+    // A hard error names a broken proxy, but not whose. The label on this
+    // event is the request's container, and the request may have been
+    // carried by a different exit entirely: a probe for another container
+    // whose token was already swept up by the time the event landed (the
+    // fetch settles first when the race falls that way), or a failover
+    // attempt through some other proxy. Blaming this container's exit for
+    // one of those took a healthy exit down for a refusal it never issued.
+    // proxyInfo names the proxy that actually failed, so the instant
+    // verdict is reserved for a failure of this container's own exit;
+    // anything else gets the check instead, which rides that exit and
+    // settles it either way.
+    const via = /** @type {{ proxyInfo?: { type: string, host: string, port: number } }} */ (d).proxyInfo
+    if (probeTraversed(via && via.type !== 'direct' ? { host: via.host, port: via.port } : null, c)) {
+      markHealth(d.cookieStoreId, 'down', d.error)
+    } else {
+      errorProbe(d.cookieStoreId)
+    }
   } else if (AMBIGUOUS_ERRORS.has(d.error)) {
-    // A page can produce these at will -- a subresource aimed at a host that
-    // resets every connection is enough. Without a floor here it could drive
-    // one check per failure for as long as its tab is open, which is both a
-    // request the page gets to time and a way to earn a rate limit from the
-    // one endpoint this design has to trust.
-    const last = lastErrorProbe.get(d.cookieStoreId) || 0
-    if (Date.now() - last < ERROR_PROBE_COOLDOWN_MS) return
-    lastErrorProbe.set(d.cookieStoreId, Date.now())
-    probe(d.cookieStoreId)
+    errorProbe(d.cookieStoreId)
   }
 }, { urls: ['<all_urls>'] })
+
+// A page can produce probe-worthy failures at will -- a subresource aimed at
+// a host that resets every connection is enough. Without a floor here it
+// could drive one check per failure for as long as its tab is open, which is
+// both a request the page gets to time and a way to earn a rate limit from
+// the one endpoint this design has to trust.
+/** @param {string} id */
+function errorProbe (id) {
+  const last = lastErrorProbe.get(id) || 0
+  if (Date.now() - last < ERROR_PROBE_COOLDOWN_MS) return
+  lastErrorProbe.set(id, Date.now())
+  probe(id)
+}
 
 /** @param {string} id */
 async function probe (id) {

@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, assign, unassign, probe, refreshRelays, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT */
+/* global state, blockLog, lastBlockedPage, assign, unassign, probe, refreshRelays, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT */
 
 ;(() => {
   /** @param {string} line */
@@ -140,6 +140,43 @@
     const cxHit = blockLog.find(b => b.container === cxId && b.url.includes('bulkhead-cxdead'))
     t(`G custom dead health=${cxDead && cxDead.health} blocked=${Boolean(cxHit)}`)
     if (cxTab.id !== undefined) await browser.tabs.remove(cxTab.id)
+
+    // Re-checking one container's dead exit must never move another
+    // container's verdict. The probe is issued by this page, so its failure
+    // events arrive labelled with the default context; before the proxyInfo
+    // gate in onErrorOccurred, the refusal above landed on whatever exit the
+    // default context was using whenever the token sweep won the race --
+    // about every other click. The runner's own SOCKS listener stands in as
+    // the healthy exit, so this holds with or without a tunnel.
+    const localCx = await saveCustomExit({ label: 'e2e local', host: '127.0.0.1', port: TEST_SOCKS_PORT })
+    const defLocal = await assign('firefox-default', `custom:${localCx.id}`)
+    if (!defLocal.ok) t(`FAIL local assign: ${defLocal.error}`)
+    // The first probe can miss its 10s timeout and the retry then waits out
+    // the down interval, so the bound covers a full reschedule cycle. A local
+    // exit that never verifies is an environment failure -- reported as its
+    // own thing, because the loop below would misread it as interference.
+    const localUp = await waitFor(() => {
+      const c = state.containers['firefox-default']
+      return Boolean(c && c.health === 'up')
+    }, 60000)
+    if (!localUp) {
+      const c = state.containers['firefox-default']
+      t(`FAIL I local exit never verified: health=${c && c.health} (${c && c.healthDetail})`)
+    } else {
+      let moved = ''
+      for (let i = 0; i < 12 && !moved; i++) {
+        await probe(cxId)
+        const c = state.containers['firefox-default']
+        if (!c || c.health !== 'up') moved = `${c && c.health} after ${i + 1} (${c && c.healthDetail})`
+      }
+      // stragglers: the event that does the damage can land after the probe
+      // that provoked it has already settled
+      await sleep(1500)
+      const defLate = state.containers['firefox-default']
+      if (!moved && defLate && defLate.health !== 'up') moved = `${defLate.health} late (${defLate.healthDetail})`
+      t(`I interference clean=${!moved}${moved ? ` got=${moved}` : ''}`)
+    }
+    await unassign('firefox-default')
 
     if (TEST_TUNNEL) {
       // The same server a relay assignment would use, typed in by hand.

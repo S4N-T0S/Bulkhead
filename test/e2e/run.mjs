@@ -12,6 +12,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { socksServer } from './socks.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const buildDir = join(root, '.cache', 'e2e-src')
@@ -39,8 +40,14 @@ const canary = createServer((req, res) => {
 await new Promise(r => canary.listen(0, '127.0.0.1', r))
 const canaryPort = /** @type {{ port: number }} */ (canary.address()).port
 
+// A local SOCKS exit that actually works, for the cases that need a healthy
+// custom assignment with or without a tunnel.
+const socks = socksServer()
+await new Promise(r => socks.listen(0, '127.0.0.1', r))
+const socksPort = /** @type {{ port: number }} */ (socks.address()).port
+
 await writeFile(join(buildDir, 'test-config.js'),
-  `globalThis.TEST_TUNNEL = ${tunnel}\nglobalThis.TEST_CANARY_PORT = ${canaryPort}\n`)
+  `globalThis.TEST_TUNNEL = ${tunnel}\nglobalThis.TEST_CANARY_PORT = ${canaryPort}\nglobalThis.TEST_SOCKS_PORT = ${socksPort}\n`)
 
 const manifestPath = join(buildDir, 'manifest.json')
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
@@ -131,6 +138,7 @@ function evaluate () {
     '[test] F loopback on passed=true',
     '[test] F loopback narrow stillblocked=true',
     '[test] G custom dead health=down blocked=true',
+    '[test] I interference clean=true',
     '[test] E race notup=true'
   ]
   if (tunnel) {
@@ -152,6 +160,7 @@ function evaluate () {
     )
   }
   canary.close()
+  socks.close()
   if (!canaryHits.some(u => u.includes('bulkhead-loopon'))) {
     console.error('e2e: the loopback canary was never reached — the opt-in case proved nothing')
     lines.push('[test] FAIL loopback canary never reached')

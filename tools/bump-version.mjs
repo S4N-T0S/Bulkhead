@@ -56,9 +56,15 @@ const [a, b] = [parts(next), parts(current)]
 const ahead = a.some((n, i) => n > b[i] && a.slice(0, i).every((x, j) => x === b[j]))
 if (!ahead) fail(`${next} is not ahead of ${current}`)
 
-// npm owns package.json and the lockfile, and writes both in its own format
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-execFileSync(npm, ['version', next, '--no-git-tag-version'], { cwd: root, stdio: 'pipe' })
+// npm owns package.json and the lockfile, and writes both in its own format.
+// Node will not execFile a .cmd without a shell, so Windows gets one; the
+// version reaching the command line has already been through the pattern
+// above and is three groups of digits.
+execFileSync('npm', ['version', next, '--no-git-tag-version'], {
+  cwd: root,
+  stdio: 'pipe',
+  shell: process.platform === 'win32'
+})
 
 // The manifest is edited in place rather than round-tripped through JSON,
 // which would flatten the blank lines it groups its sections with.

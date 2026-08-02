@@ -14,6 +14,7 @@
   },
   "scripts": {
     "setup": "node tools/get-firefox.mjs",
+    "bump": "node tools/bump-version.mjs",
     "start": "web-ext run",
     "lint": "eslint .",
     "lint:amo": "node tools/lint-amo.mjs",

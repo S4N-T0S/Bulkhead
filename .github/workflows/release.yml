@@ -46,7 +46,7 @@ jobs:
       - run: npm run build
       - run: npx --no-install addons-linter dist/bulkhead-*.zip
 
-      - uses: actions/attest-build-provenance@v3
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: dist/bulkhead-*.zip
 
@@ -58,9 +58,15 @@ jobs:
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
-        run: npx --no-install web-ext sign --channel=listed --source-dir=src --artifacts-dir=dist
+        # --approval-timeout=0 submits and returns instead of polling for
+        # approval. An extension asking for <all_urls> and webRequestBlocking
+        # can sit in review for days, and web-ext's default 15-minute wait
+        # would fail this job long after the upload it cannot take back.
+        run: npx --no-install web-ext sign --channel=listed --source-dir=src --artifacts-dir=dist --approval-timeout=0
 
+      # The zip, not the signed xpi: signing happens on AMO's side and may not
+      # have finished yet. This is also the artifact the attestation covers.
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/bulkhead-*.zip dist/*.xpi --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" dist/bulkhead-*.zip --generate-notes --verify-tag

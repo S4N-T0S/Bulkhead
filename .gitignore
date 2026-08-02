@@ -6,6 +6,10 @@ web-ext-artifacts/
 *.xpi
 .env
 
+# written into src/ by web-ext sign; kept out of the zip by web-ext's own
+# dotfile filter, but git would otherwise offer to commit it
+.amo-upload-uuid
+
 # working notes, listing drafts, review material -- not part of the
 # published repository. README.md and assets/ are, and stay tracked.
 docs/

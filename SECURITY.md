@@ -22,6 +22,9 @@ Concretely:
 - Making `proxy.onRequest` return `direct`, or an unusable `ProxyInfo`, for a
   context that has an exit assigned.
 - Traffic from one container leaving via another container's exit.
+- A health check that is credited to an exit which did not carry it — a
+  reply obtained through a system proxy, a failover hop or a direct
+  connection counting as proof that the assigned exit is working.
 - Any way a web page can reach the extension's message handlers, read stored
   assignments, or change settings.
 - A DNS lookup for a relay hostname escaping the tunnel.
@@ -38,6 +41,11 @@ signs releases.
   though a report that makes one of them *worse than documented* is.
 - Anything requiring an already-compromised browser profile or physical
   access to an unlocked machine.
+- What a custom exit does with the traffic you send it. Adding one is a
+  decision to trust that server; the extension can prove a check went
+  through it, never where it comes out afterwards. Its credentials are
+  stored unencrypted in the profile, like every other extension's settings,
+  and SOCKS5 sends them in the clear by design.
 - Mullvad's own infrastructure. Report that to Mullvad.
 
 ## Verifying a report yourself

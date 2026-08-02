@@ -90,6 +90,13 @@ Read this part.
   minutes and revokes the setup acknowledgement rather than leaving a stale
   tick. The reverse is not provable, so a quiet result is reported as "no DoH
   seen", never as verified off.
+- **Another extension doing its own lookups.** `dns.resolve()` is not a web
+  request: nothing in the proxy or webRequest pipeline sees it, so a lookup
+  another extension makes rides the system resolver instead of the
+  container's exit. The known case was uBlock Origin's CNAME uncloaking,
+  fixed upstream in 1.60.0 — current uBO skips its lookup for any request
+  proxied with `proxyDNS`, which Bulkhead always sets. On older uBO, untick
+  "Uncloak canonical names" in its settings, or update it.
 - **Requests before the background page is running.** Anything Firefox issues
   during early startup is seen by neither listener. `persistent: true` is the
   mitigation the platform offers and it is set.
@@ -126,6 +133,16 @@ than the one configured blocks the container as `misrouted`.
   them until you allow it, in about:addons → Bulkhead → Details → Run in
   Private Windows. Until then Bulkhead cannot gate them at all, and the
   options page says so next to the row rather than pretending otherwise.
+- Custom exits: your own SOCKS5 servers — an SSH tunnel, a server you are
+  trying out — added in settings and assigned like any relay. Same
+  killswitch, same probing; the one thing no check can vouch for is where a
+  foreign exit comes out, and the settings page says so rather than
+  pretending.
+- **Allow loopback addresses**, an opt-in bypass for sign-in flows that hand
+  a token to an app listening on 127.0.0.1. Off by default; on, the gate passes loopback and
+  nothing else. Under default preferences Firefox does not proxy these
+  addresses in the first place (`network.proxy.allow_hijacking_localhost`),
+  so the toggle opens the killswitch for them, not a new route.
 - Offline awareness: the relay list refreshes daily, servers out of service
   disappear from the picker, and if one of *your* assigned exits goes offline
   you get told, with a one-click move to the same city.
@@ -138,6 +155,13 @@ than the one configured blocks the container as `misrouted`.
   fully restored when you switch them off.
 - Per-tab toolbar badge: nothing when the exit is verified, `?` while
   checking, `!` when blocked.
+
+Bulkhead decides how a container reaches the network, not which sites open
+in which container — that is Mozilla's [Multi-Account Containers], and the
+two compose cleanly: MAC pins a site to a container, Bulkhead pins that
+container to an exit.
+
+[Multi-Account Containers]: https://addons.mozilla.org/firefox/addon/multi-account-containers/
 
 ![default context on the tunnel exit](assets/popup-default-dark.png)
 
@@ -152,9 +176,13 @@ proxy.onRequest        cookieStoreId -> SOCKS5 ProxyInfo, from an in-memory
 webRequest.onBefore    decide(state, request) -> allow | block.
                        Blocking listener; the sole authority.
 
-webRequest.onError     hard proxy errors trip health instantly; a plain
-                       timeout only schedules a probe, since a slow site is
-                       indistinguishable from a dead proxy.
+webRequest.onError     hard proxy errors trip health instantly. Errors that
+                       name no layer -- a timeout, a reset, a refusal --
+                       only schedule a probe, since a broken site produces
+                       the same ones. A probe's own failure is ignored here:
+                       it travels the target container's proxy but is issued
+                       by the background page, so the error arrives labelled
+                       with the wrong container.
 
 alarms                 probe non-up containers every 30s to recover; sweep
                        healthy ones every 10m to catch silent misroutes;
@@ -181,6 +209,14 @@ Choices worth knowing about:
   single-use random token the background is currently holding *and* targets
   the probe endpoint. A page pasting the marker into its URLs gets nothing:
   unrecognised tokens take the normal path through both listeners.
+- **A check counts only if it travelled the assigned exit.** Firefox retries
+  a refused proxy down its failover list, and with a system or PAC proxy
+  configured that retry can succeed elsewhere — a perfectly good answer from
+  the wrong route. Every attempt's `proxyInfo` is recorded, and a check that
+  did not go through the exit under test is a failure, not a pass. For a
+  Mullvad relay the exit-name comparison catches this too; for a custom exit,
+  where there is no expected name to compare against, this is the only thing
+  that does.
 - **The proxy host is the literal `10.124.x.x`**, resolved once at assignment
   time and refused if the answer is not a tunnel address. Resolving the
   hostname per request would tell your resolver which exit each container
@@ -239,7 +275,18 @@ helpers.
 `npm run test:e2e` copies `src/` to a build dir, appends a self-test to the
 background, and drives the project-local Firefox with `web-ext` on a fresh
 profile. Cases that need live relays detect the tunnel and skip without it
-(CI runs the rest headless). Verified against Firefox 154 and live relays:
+(CI runs the rest headless).
+
+The same suite runs against any build in `.cache/firefox`, so the floor in
+`strict_min_version` is a tested claim rather than a guess:
+
+```
+FIREFOX_CHANNEL=release FIREFOX_VERSION=142.0 npm run setup
+FIREFOX_BINARY=.cache/firefox/142.0-win64/core/firefox.exe npm run test:e2e
+```
+
+Verified against Firefox 142 (the declared minimum) and 154, with live
+relays, identical results on both:
 
 | case | result |
 |---|---|
@@ -251,6 +298,10 @@ profile. Cases that need live relays detect the tunnel and skip without it
 | default context on the tunnel exit, tunnel down | tabs blocked **and** the extension's own relay fetch blocked |
 | default context on the tunnel exit, tunnel up | verified against `am.i.mullvad.net`, traffic passes |
 | hardening apply / clear | takes control, then fully restores |
+| loopback from a blocked container, toggle off | blocked, reason `proxy-down` |
+| loopback from a blocked container, toggle on | reaches a local server, while everything else in that container stays blocked |
+| custom exit with nothing listening | health `down`, navigation blocked |
+| custom exit on a live SOCKS server | health `up`, reachability verified through the exit itself |
 
 There is also a manual diagnostic for the transition window itself:
 `node test/e2e/transition.mjs --failover-direct=true` pins the default
@@ -269,10 +320,10 @@ shouldn't be there.
 
 ## Roadmap
 
-Custom SOCKS5 endpoints per container, and support for other providers that
-expose in-tunnel SOCKS the way Mullvad does. The plumbing is already
-provider-shaped: an assignment is just an address, a port and an optional
-expected exit name.
+Support for other providers that expose in-tunnel SOCKS the way Mullvad
+does, and HTTP/HTTPS proxy types alongside SOCKS5 for custom exits. The
+plumbing is already provider-shaped: an assignment is just an address, a
+port and an optional expected exit name.
 
 ## Reporting a security issue
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Bulkhead",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Gives each Firefox container its own Mullvad server. If that server stops working, the container's tabs stop loading rather than fall back to your real connection. Unofficial, not by Mullvad AB.",
   "author": "S4N-T0S",
   "homepage_url": "https://github.com/S4N-T0S/Bulkhead",

@@ -20,7 +20,7 @@ body:
     id: versions
     attributes:
       label: Bulkhead and Firefox versions
-      placeholder: Bulkhead 0.1.0, Firefox 154.0
+      placeholder: Bulkhead 1.0.0, Firefox 154.0
     validations:
       required: true
 

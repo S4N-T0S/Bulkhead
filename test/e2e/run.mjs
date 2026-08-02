@@ -9,6 +9,7 @@
 
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,7 +26,21 @@ await rm(buildDir, { recursive: true, force: true })
 await mkdir(buildDir, { recursive: true })
 await cp(join(root, 'src'), buildDir, { recursive: true })
 await cp(join(root, 'test', 'e2e', 'selftest.js'), join(buildDir, 'selftest.js'))
-await writeFile(join(buildDir, 'test-config.js'), `globalThis.TEST_TUNNEL = ${tunnel}\n`)
+// A canary on loopback, so the loopback case can assert a request actually
+// arrived rather than merely going unblocked. Bound to 127.0.0.1, so nothing
+// is exposed off the machine.
+/** @type {string[]} */
+const canaryHits = []
+const canary = createServer((req, res) => {
+  canaryHits.push(String(req.url))
+  res.writeHead(200, { 'content-type': 'text/plain' })
+  res.end('ok')
+})
+await new Promise(r => canary.listen(0, '127.0.0.1', r))
+const canaryPort = /** @type {{ port: number }} */ (canary.address()).port
+
+await writeFile(join(buildDir, 'test-config.js'),
+  `globalThis.TEST_TUNNEL = ${tunnel}\nglobalThis.TEST_CANARY_PORT = ${canaryPort}\n`)
 
 const manifestPath = join(buildDir, 'manifest.json')
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
@@ -112,13 +127,18 @@ function evaluate () {
     '[test] A cancelled=true',
     '[test] A blockedpage shown=true',
     '[test] harden apply=ok clear=ok',
+    '[test] F loopback off blocked=true',
+    '[test] F loopback on passed=true',
+    '[test] F loopback narrow stillblocked=true',
+    '[test] G custom dead health=down blocked=true',
     '[test] E race notup=true'
   ]
   if (tunnel) {
     expected.push(
       '[test] D health=up passed=true',
       '[test] B health=up passed=true',
-      '[test] C health=misrouted'
+      '[test] C health=misrouted',
+      '[test] H custom live health=up custom=true'
     )
   } else {
     expected.push(
@@ -127,8 +147,14 @@ function evaluate () {
       '[test] D blockedpage shown=true',
       '[test] D self-fetch blocked=true',
       '[test] SKIP B (no tunnel)',
-      '[test] SKIP C (no tunnel)'
+      '[test] SKIP C (no tunnel)',
+      '[test] SKIP H (no tunnel)'
     )
+  }
+  canary.close()
+  if (!canaryHits.some(u => u.includes('bulkhead-loopon'))) {
+    console.error('e2e: the loopback canary was never reached — the opt-in case proved nothing')
+    lines.push('[test] FAIL loopback canary never reached')
   }
 
   const missing = expected.filter(e => !lines.some(l => l.includes(e)))
@@ -147,6 +173,9 @@ function evaluate () {
 }
 
 async function firefoxBinary () {
+  // Point at any build already in .cache/firefox to run the same suite
+  // against another version without disturbing the one npm start uses.
+  if (process.env.FIREFOX_BINARY) return process.env.FIREFOX_BINARY
   const current = join(root, '.cache', 'firefox', 'current.json')
   try {
     return JSON.parse(await readFile(current, 'utf8')).binary

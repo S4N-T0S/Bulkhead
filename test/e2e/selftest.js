@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, assign, unassign, probe, refreshRelays, applyHardening, log, TEST_TUNNEL */
+/* global state, blockLog, lastBlockedPage, assign, unassign, probe, refreshRelays, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT */
 
 ;(() => {
   /** @param {string} line */
@@ -93,6 +93,82 @@
     const clearOk = !cleared.webRTC.ok && !cleared.prediction.ok
       && cleared.webRTC.levelOfControl !== 'controlled_by_this_extension'
     t(`harden apply=${applyOk ? 'ok' : JSON.stringify(applied)} clear=${clearOk ? 'ok' : JSON.stringify(cleared)}`)
+
+    // Loopback, from a container that is blocked. A sign-in flow finishing
+    // on 127.0.0.1 has to be reachable once the user opts in, and not one
+    // moment before -- the container from case A is still down, so it is
+    // exactly the right place to ask. The canary is the runner's own server,
+    // so a completed request means the request really arrived.
+    const loop = `http://127.0.0.1:${TEST_CANARY_PORT}/`
+    const loopOffTab = await browser.tabs.create({ url: `${loop}?bulkhead-loopoff`, cookieStoreId: deadId, active: false })
+    await sleep(4000)
+    const loopOffHit = blockLog.find(b => b.container === deadId && b.url.includes('bulkhead-loopoff'))
+    t(`F loopback off blocked=${Boolean(loopOffHit)} reason=${loopOffHit ? loopOffHit.reason : 'NONE-LEAKED'}`)
+    if (loopOffTab.id !== undefined) await browser.tabs.remove(loopOffTab.id)
+
+    await browser.storage.local.set({ allowLocal: true })
+    await waitFor(() => state.allowLocal === true, 5000)
+    const loopOnTab = await browser.tabs.create({ url: `${loop}?bulkhead-loopon`, cookieStoreId: deadId, active: false })
+    await sleep(4000)
+    const loopOnHit = blockLog.find(b => b.container === deadId && b.url.includes('bulkhead-loopon'))
+    t(`F loopback on passed=${!loopOnHit && outcomeOf('bulkhead-loopon') === 'completed'} outcome=${outcomeOf('bulkhead-loopon')}`)
+    // the hole is loopback-shaped: the same container stays shut otherwise
+    const stillTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-loopother', cookieStoreId: deadId, active: false })
+    await sleep(4000)
+    t(`F loopback narrow stillblocked=${Boolean(blockLog.find(b => b.container === deadId && b.url.includes('bulkhead-loopother')))}`)
+    for (const tab of [loopOnTab, stillTab]) {
+      if (tab.id !== undefined) await browser.tabs.remove(tab.id)
+    }
+    await browser.storage.local.set({ allowLocal: false })
+    await waitFor(() => state.allowLocal === false, 5000)
+
+    // A custom exit is the user's own SOCKS server, with no expected exit
+    // name to compare a probe against. It is held to the same rule anyway:
+    // unproven blocks.
+    const deadCx = await saveCustomExit({ label: 'e2e dead', host: '127.0.0.1', port: 1 })
+    const cxIdent = await browser.contextualIdentities.create({ name: 'bulkhead-custom', color: 'purple', icon: 'circle' })
+    const cxId = cxIdent.cookieStoreId
+    const cxAssign = await assign(cxId, `custom:${deadCx.id}`)
+    if (!cxAssign.ok) t(`FAIL custom assign: ${cxAssign.error}`)
+    await waitFor(() => {
+      const c = state.containers[cxId]
+      return Boolean(c && c.health === 'down')
+    }, 20000)
+    const cxTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-cxdead', cookieStoreId: cxId, active: false })
+    await sleep(5000)
+    const cxDead = state.containers[cxId]
+    const cxHit = blockLog.find(b => b.container === cxId && b.url.includes('bulkhead-cxdead'))
+    t(`G custom dead health=${cxDead && cxDead.health} blocked=${Boolean(cxHit)}`)
+    if (cxTab.id !== undefined) await browser.tabs.remove(cxTab.id)
+
+    if (TEST_TUNNEL) {
+      // The same server a relay assignment would use, typed in by hand.
+      // Proves the custom path routes and verifies, not merely that it
+      // blocks when broken.
+      const memo = await refreshRelays(false)
+      const relay = memo.relays.find((/** @type {Relay} */ r) => r.active)
+      await assign(cxId, relay.host)
+      // assign() returns once storage is written; the in-memory config
+      // catches up on the storage event, and reading it too early yields the
+      // address of the exit being replaced.
+      await waitFor(() => {
+        const c = state.containers[cxId]
+        return Boolean(c && c.host === relay.host)
+      }, 10000)
+      const resolved = state.containers[cxId]
+      const liveCx = await saveCustomExit({ label: 'e2e live', host: resolved ? resolved.ip : '', port: 1080 })
+      await assign(cxId, `custom:${liveCx.id}`)
+      await waitFor(() => {
+        const c = state.containers[cxId]
+        return Boolean(c && c.health && c.health !== 'unknown')
+      }, 30000)
+      const cxLive = state.containers[cxId]
+      t(`H custom live health=${cxLive && cxLive.health} custom=${Boolean(cxLive && cxLive.custom)}`)
+    } else {
+      t('SKIP H (no tunnel)')
+    }
+    await unassign(cxId)
+    await browser.contextualIdentities.remove(cxId).catch(() => null)
 
     // Default context on the tunnel's own endpoint. Tunnel down: ordinary
     // tabs AND the extension's own fetches must fail closed. Tunnel up: the

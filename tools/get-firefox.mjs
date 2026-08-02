@@ -1,7 +1,16 @@
-// Fetches a project-local Firefox Developer Edition into .cache/firefox/ so
-// `npm start` and the e2e runner drive a known browser instead of whatever
-// happens to be installed. Re-running is cheap: completed downloads are kept
-// and keyed by version.
+// Fetches a project-local Firefox into .cache/firefox/ so `npm start` and the
+// e2e runner drive a known browser instead of whatever happens to be
+// installed. Re-running is cheap: completed downloads are kept and keyed by
+// version.
+//
+// Developer Edition by default, since that is what development tracks.
+// FIREFOX_CHANNEL=release|esr picks a shipping build instead, and
+// FIREFOX_VERSION pins an exact one -- which is how the extension gets tested
+// against the floor it claims in strict_min_version rather than only against
+// whatever is newest:
+//
+//   FIREFOX_CHANNEL=release FIREFOX_VERSION=142.0 node tools/get-firefox.mjs
+//   FIREFOX_CHANNEL=esr node tools/get-firefox.mjs
 
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
@@ -21,48 +30,79 @@ if (!platform) {
   process.exit(1)
 }
 
-const versions = await getJson('https://product-details.mozilla.org/1.0/firefox_versions.json')
-const version = process.env.FIREFOX_VERSION || versions.FIREFOX_DEVEDITION
+const channel = process.env.FIREFOX_CHANNEL || 'devedition'
+if (!['devedition', 'release', 'esr'].includes(channel)) {
+  console.error(`get-firefox: unknown channel ${channel}`)
+  process.exit(1)
+}
+
+// The version lands in a path that gets rm -rf'd and in the URL the checksums
+// are fetched from, and in CI it arrives from an HTTP response rather than
+// from a person. Anything that is not a version number stops here -- a pinned
+// one before the network is touched at all.
+const VERSION_RE = /^\d+(\.\d+){0,2}([ab]\d+)?(esr)?$/
+let version = process.env.FIREFOX_VERSION
+if (version && !VERSION_RE.test(version)) {
+  throw new Error(`get-firefox: refusing FIREFOX_VERSION ${JSON.stringify(version)}`)
+}
+if (!version) {
+  const versions = await getJson('https://product-details.mozilla.org/1.0/firefox_versions.json')
+  version = {
+    devedition: versions.FIREFOX_DEVEDITION,
+    release: versions.LATEST_FIREFOX_VERSION,
+    esr: versions.FIREFOX_ESR
+  }[channel]
+  if (!VERSION_RE.test(String(version))) {
+    throw new Error(`get-firefox: product-details gave an unusable ${channel} version ${JSON.stringify(version)}`)
+  }
+}
+// Release and ESR share one archive tree; only Developer Edition has its own.
+const product = channel === 'devedition' ? 'devedition' : 'firefox'
 const dir = join(cacheDir, `${version}-${platform}`)
 const binary = platform === 'win64' ? join(dir, 'core', 'firefox.exe') : join(dir, 'firefox', 'firefox')
 const marker = join(dir, '.complete')
 
-if (await exists(marker)) {
-  await writeCurrent()
-  console.log(`firefox devedition ${version} already present: ${binary}`)
-  process.exit(0)
-}
-
-const base = `https://archive.mozilla.org/pub/devedition/releases/${version}`
+const base = `https://archive.mozilla.org/pub/${product}/releases/${version}`
 const artifact = platform === 'win64'
   ? `win64/en-US/Firefox Setup ${version}.exe`
   : `linux-x86_64/en-US/firefox-${version}.tar.xz`
 const url = `${base}/${artifact.split('/').map(encodeURIComponent).join('/')}`
 
-await rm(dir, { recursive: true, force: true })
-await mkdir(dir, { recursive: true })
-const tmp = join(cacheDir, `download-${version}.tmp`)
+// Ending by falling off the bottom rather than calling process.exit: the
+// version lookup above leaves a keep-alive socket open, and exiting out from
+// under it aborts the process on Windows -- which turned a successful setup
+// into a failed one.
+if (await exists(marker)) {
+  await writeCurrent()
+  console.log(`firefox ${channel} ${version} already present: ${binary}`)
+} else {
+  await install()
+}
 
-const expected = await expectedDigest(artifact)
-console.log(`downloading firefox devedition ${version} (${platform})`)
-const actual = await download(url, tmp)
-if (actual !== expected) {
+async function install () {
+  await rm(dir, { recursive: true, force: true })
+  await mkdir(dir, { recursive: true })
+  const tmp = join(cacheDir, `download-${version}.tmp`)
+
+  const expected = await expectedDigest(artifact)
+  console.log(`downloading firefox ${channel} ${version} (${platform})`)
+  const actual = await download(url, tmp)
+  if (actual !== expected) {
+    await rm(tmp, { force: true })
+    throw new Error(`checksum mismatch for ${artifact}\n  expected ${expected}\n  got      ${actual}`)
+  }
+  console.log(`  sha256 ok (${actual.slice(0, 16)}…)`)
+  extract(tmp, dir)
+
+  if (!await exists(binary)) {
+    throw new Error(`extraction finished but ${binary} is missing`)
+  }
+
   await rm(tmp, { force: true })
-  console.error(`get-firefox: checksum mismatch for ${artifact}\n  expected ${expected}\n  got      ${actual}`)
-  process.exit(1)
+  await writeFile(marker, '')
+  await writeCurrent()
+  console.log(`ready: ${binary}`)
 }
-console.log(`  sha256 ok (${actual.slice(0, 16)}…)`)
-extract(tmp, dir)
-
-if (!await exists(binary)) {
-  console.error(`get-firefox: extraction finished but ${binary} is missing`)
-  process.exit(1)
-}
-
-await rm(tmp, { force: true })
-await writeFile(marker, '')
-await writeCurrent()
-console.log(`ready: ${binary}`)
 
 async function getJson (url) {
   const res = await fetch(url, { signal: AbortSignal.timeout(30_000) })
@@ -131,7 +171,7 @@ function extract (archive, dest) {
 
 async function writeCurrent () {
   await mkdir(cacheDir, { recursive: true })
-  await writeFile(join(cacheDir, 'current.json'), JSON.stringify({ version, platform, binary }, null, 2) + '\n')
+  await writeFile(join(cacheDir, 'current.json'), JSON.stringify({ version, channel, platform, binary }, null, 2) + '\n')
 }
 
 async function exists (p) {

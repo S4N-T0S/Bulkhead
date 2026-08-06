@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, assign, unassign, probe, refreshRelays, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT */
+/* global state, blockLog, lastBlockedPage, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT */
 
 ;(() => {
   /** @param {string} line */
@@ -175,6 +175,55 @@
       const defLate = state.containers['firefox-default']
       if (!moved && defLate && defLate.health !== 'up') moved = `${defLate.health} late (${defLate.healthDetail})`
       t(`I interference clean=${!moved}${moved ? ` got=${moved}` : ''}`)
+    }
+
+    // A check carried off its server must park at 'unknown' and re-run, not
+    // convict: Firefox blacklists a proxy for a second after any failed
+    // connection through it, and a probe resolved inside that window rides
+    // the failover path instead. probeTraversed is background.js's view of
+    // whether the check travelled its own proxy, read from the global scope
+    // at call time, so stubbing it stages the mis-carry against the healthy
+    // local exit without needing a real blacklist race.
+    if (localUp) {
+      const defC = () => state.containers['firefox-default']
+      // Straggler probes of the dead containers can hang up to the 10s
+      // probe timeout; proceeding under one would let probesInFlight
+      // swallow the probe a phase below is asserting on.
+      const quiet = async () => {
+        if (!await waitFor(() => probesInFlight.size === 0, 12000)) t('FAIL J probes never went quiet')
+      }
+      const realTraversed = globalThis.probeTraversed
+      await quiet()
+      globalThis.probeTraversed = () => false
+      await probe('firefox-default')
+      t(`J recheck parked=${Boolean(defC() && defC().health === 'unknown')} health=${defC() && defC().health}`)
+      // an immediate repeat began inside the failover window, so it proves
+      // nothing and must keep the container parked, not convict it
+      await probe('firefox-default')
+      t(`J recheck stillparked=${Boolean(defC() && defC().health === 'unknown')} health=${defC() && defC().health}`)
+      // a mis-carry on a probe that began after the window is the real
+      // verdict -- either the armed follow-up or the manual probe below
+      // lands it, whichever is not thrown away as already in flight
+      await quiet()
+      await sleep(RECHECK_DELAY_MS + 200)
+      await probe('firefox-default')
+      const convicted = await waitFor(() => Boolean(defC() && defC().health === 'misrouted'), 15000)
+      t(`J recheck convicted=${convicted} health=${defC() && defC().health}`)
+      globalThis.probeTraversed = realTraversed
+      await quiet()
+      await probe('firefox-default')
+      const healed = await waitFor(() => Boolean(defC() && defC().health === 'up'), 15000)
+      t(`J recheck healed=${healed} health=${defC() && defC().health}`)
+      // the 'up' verdict must have re-armed the retry, and the scheduled
+      // follow-up probe must heal on its own once the route is honest again
+      await quiet()
+      globalThis.probeTraversed = () => false
+      await probe('firefox-default')
+      const rearmed = Boolean(defC() && defC().health === 'unknown')
+      globalThis.probeTraversed = realTraversed
+      t(`J recheck rearmed=${rearmed} health=${defC() && defC().health}`)
+      const autohealed = await waitFor(() => Boolean(defC() && defC().health === 'up'), 15000)
+      t(`J recheck autohealed=${autohealed} health=${defC() && defC().health}`)
     }
     await unassign('firefox-default')
 

@@ -16,7 +16,10 @@ import { socksServer } from './socks.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const buildDir = join(root, '.cache', 'e2e-src')
-const timeoutMs = Number(process.env.E2E_TIMEOUT_MS) || 240_000
+// Case J alone can spend a minute or more on a slow network; a budget that
+// ends the run early surfaces as MISSING lines for whatever case happened
+// to be last, which points the blame at the wrong place entirely.
+const timeoutMs = Number(process.env.E2E_TIMEOUT_MS) || 300_000
 
 const firefox = await firefoxBinary()
 const tunnel = await detectTunnel()
@@ -139,6 +142,12 @@ function evaluate () {
     '[test] F loopback narrow stillblocked=true',
     '[test] G custom dead health=down blocked=true',
     '[test] I interference clean=true',
+    '[test] J recheck parked=true',
+    '[test] J recheck stillparked=true',
+    '[test] J recheck convicted=true',
+    '[test] J recheck healed=true',
+    '[test] J recheck rearmed=true',
+    '[test] J recheck autohealed=true',
     '[test] E race notup=true'
   ]
   if (tunnel) {

@@ -266,8 +266,12 @@
    */
   function configKey (c) {
     // Never logged or persisted -- lives in in-memory maps only, so the
-    // credentials can safely be part of the identity.
-    return c ? `${c.ip}:${c.port}:${c.socksHost}:${c.username || ''}:${c.password || ''}` : ''
+    // credentials can safely be part of the identity. host and custom are
+    // part of it for the same reason mergeAssignments compares them: a
+    // custom exit at 10.64.0.1:1080 and the Mullvad tunnel endpoint are the
+    // same address judged by different rules, and a verdict for one must
+    // never be read as answering for the other.
+    return c ? `${c.ip}:${c.port}:${c.socksHost}:${c.host}:${c.custom === true}:${c.username || ''}:${c.password || ''}` : ''
   }
 
   /**

@@ -15,6 +15,14 @@
 const FAILOVER_SECONDS = 1
 
 const PROBE_TIMEOUT_MS = 10000
+// A check that was not carried by its own server is re-run once before any
+// verdict, after Firefox's failover blacklist has lapsed. One failed
+// connection anywhere -- an ordinary tab request, a neighbouring probe in a
+// re-check-all burst -- blacklists that proxy for FAILOVER_SECONDS, and a
+// probe resolved inside the window is silently carried elsewhere. That says
+// something about the last second, not about the server; only a mis-carry
+// that repeats after the window is evidence worth convicting on.
+const RECHECK_DELAY_MS = FAILOVER_SECONDS * 1000 + 1000
 const RELAY_TTL_MS = 24 * 60 * 60 * 1000
 // Mullvad's in-tunnel SOCKS endpoint: exits at whatever server the app is
 // connected to, unreachable when the app is off. An assignment to it stores
@@ -78,6 +86,13 @@ const probeRoute = new Map()
 // lands after the assignment changed can be recognised and discarded
 /** @type {Map<string, string>} */
 const probesInFlight = new Map()
+// cookieStoreId -> the config fingerprint that got its follow-up check and
+// when it was parked, so a mis-carried check gets its second look exactly
+// once and a persistent mismatch still convicts without parking again.
+// Cleared when the episode ends -- an 'up', or a hard failure -- so the
+// next transient, months from now, earns its own retry.
+/** @type {Map<string, { key: string, at: number }>} */
+const rechecked = new Map()
 /** @type {BlockEntry[]} */
 const blockLog = []
 // Set when blocked.html actually renders; how the e2e run proves the
@@ -137,6 +152,13 @@ async function hydrate () {
     }
     for (const id of Object.keys(renamed)) {
       if (!(id in containers) || stale.includes(id)) delete renamed[id]
+    }
+    // The recheck marker follows the config it judged. Left behind across a
+    // reassignment, it would deny the new config the second look the old
+    // one already spent -- a switch away and back would then convict on its
+    // first transient, which is the exact false verdict it exists to stop.
+    for (const id of rechecked.keys()) {
+      if (!(id in containers) || stale.includes(id)) rechecked.delete(id)
     }
     state.ready = true
     state.hydrateError = ''
@@ -368,6 +390,10 @@ async function probe (id) {
   const token = randomToken()
   probeTargets.set(token, id)
   state.probeTokens.add(token)
+  // When this probe began, which is what recheck() judges a repeat by: the
+  // connection is made at the start of the fetch, so only the start says
+  // whether it could still have fallen inside the failover blacklist.
+  const startedAt = Date.now()
 
   try {
     const res = await fetch(`${PROBE_URL}?${PROBE_MARKER}=${token}`, {
@@ -394,7 +420,10 @@ async function probe (id) {
       // Carried by something else entirely -- another proxy in Firefox's
       // failover list, or nothing at all. That is a misroute in the plainest
       // sense, whatever the exit itself is doing, so it gets the state whose
-      // label and advice already fit: wrong exit, pick another.
+      // label and advice already fit: wrong exit, pick another. First time
+      // through it gets the recheck instead: the likeliest cause is the
+      // failover blacklist, and 'unknown' blocks while the retry settles it.
+      if (recheck(id, key, startedAt, 'The last check did not travel this server. Checking again.')) return
       delete renamed[id]
       markHealth(id, via ? 'misrouted' : 'down', via
         ? 'A different server carried the check, not this one.'
@@ -413,6 +442,9 @@ async function probe (id) {
       return
     }
     const j = await res.json()
+    // Reading the body is an async gap like the fetch itself: the same
+    // reassignment the guard above catches can also land here.
+    if (relaylib.configKey(state.containers[id]) !== key) return
 
     if (c.custom) {
       // Reachability is all a foreign exit can prove: the round trip went
@@ -425,10 +457,15 @@ async function probe (id) {
       const seen = typeof j.mullvad_exit_ip_hostname === 'string' ? j.mullvad_exit_ip_hostname : ''
       markHealth(id, 'up', seen || 'reachable', typeof j.ip === 'string' ? j.ip : '')
     } else if (!j.mullvad_exit_ip) {
+      // Honest evidence -- this probe travelled its own proxy -- so it also
+      // ends whatever episode the recheck marker was holding open.
+      rechecked.delete(id)
       markHealth(id, 'down', 'Traffic came out somewhere that is not a Mullvad server.')
     } else if (c.socksHost && j.mullvad_exit_ip_hostname !== c.socksHost) {
-      // Answered, but from the wrong exit -- a failure either way. A rename
-      // is worth reporting differently from traffic going astray.
+      // Answered, but from the wrong exit -- a failure either way, once it
+      // repeats. A rename is worth reporting differently from traffic going
+      // astray.
+      if (recheck(id, key, startedAt, 'The last check came out at a different server. Checking again.')) return
       const became = relaylib.renamedTo(c, j.mullvad_exit_ip_hostname, relayMemo.relays)
       renamed[id] = became ? became.host : ''
       markHealth(id, 'misrouted', `expected ${c.socksHost}, got ${j.mullvad_exit_ip_hostname}`)
@@ -438,6 +475,11 @@ async function probe (id) {
     }
   } catch (e) {
     if (relaylib.configKey(state.containers[id]) !== key) return
+    // The marker means "this mis-carry had its look", and a server that has
+    // since failed outright makes the next mis-carry a new event, not a
+    // repeat. Left standing through the outage, the marker would convict a
+    // transient months after the episode it belongs to.
+    rechecked.delete(id)
     markHealth(id, 'down', e instanceof Error ? e.message : String(e))
   } finally {
     probeTargets.delete(token)
@@ -448,6 +490,30 @@ async function probe (id) {
     if (now) scheduleProbe(id, now.health)
     else nextProbeAt.delete(id)
   }
+}
+
+// The second look a mis-carried check gets, and the only one. True means
+// the caller must return without a verdict: health is parked at 'unknown'
+// -- which blocks, so a proxy that really is failing over to direct leaks
+// nothing while the answer is pending -- and the same config is probed
+// again once the failover blacklist cannot be the explanation any more.
+// False means this config already had its look, from a probe that began
+// after the window, and whatever the caller saw is real.
+//
+// Judged on when the probe began, not on the marker alone: the parked
+// container can be probed again at any moment -- a popup click, a stale
+// timer -- and a probe that began inside the window would otherwise convict
+// on the same blacklist event the park was for.
+/** @param {string} id @param {string} key @param {number} startedAt @param {string} detail @returns {boolean} */
+function recheck (id, key, startedAt, detail) {
+  const prev = rechecked.get(id)
+  if (prev && prev.key === key && startedAt - prev.at >= RECHECK_DELAY_MS) return false
+  if (!prev || prev.key !== key) {
+    rechecked.set(id, { key, at: Date.now() })
+    setTimeout(() => probe(id), RECHECK_DELAY_MS)
+  }
+  markHealth(id, 'unknown', detail)
+  return true
 }
 
 // No API reads network.trr.mode, but dns.resolve reports whether the answer
@@ -511,9 +577,13 @@ function markHealth (id, health, detail, exitIp) {
   if (prev !== health) {
     log(`[bulkhead] ${id}: ${prev} -> ${health} (${detail})`)
     if (health === 'up') {
-      // Allow the next failure to notify again.
+      // Allow the next failure to notify again, and the next mis-carried
+      // check to earn a fresh retry.
       delete lastNotified[id]
-    } else {
+      rechecked.delete(id)
+    } else if (health !== 'unknown') {
+      // 'unknown' is the recheck parking state, not a verdict; if the retry
+      // convicts, the transition out of it notifies then.
       notifyDown(id, health, detail)
     }
   }
@@ -576,6 +646,9 @@ browser.alarms.onAlarm.addListener((a) => {
   }
   for (const id of lastErrorProbe.keys()) {
     if (!(id in state.containers)) lastErrorProbe.delete(id)
+  }
+  for (const id of rechecked.keys()) {
+    if (!(id in state.containers)) rechecked.delete(id)
   }
 })
 

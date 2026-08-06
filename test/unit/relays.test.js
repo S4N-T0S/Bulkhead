@@ -210,11 +210,18 @@ test('renamedTo separates a renamed server from a real misroute', () => {
 })
 
 test('configKey distinguishes the things a probe verdict depends on', () => {
-  const base = { ip: '10.124.0.1', port: 1080, socksHost: 'se-got-wg-socks5-001' }
+  const base = { ip: '10.124.0.1', port: 1080, socksHost: 'se-got-wg-socks5-001', host: 'se-got-wg-001' }
   assert.equal(configKey(base), configKey({ ...base, city: 'elsewhere' }))
   assert.notEqual(configKey(base), configKey({ ...base, ip: '10.124.0.2' }))
   assert.notEqual(configKey(base), configKey({ ...base, port: 1081 }))
   assert.notEqual(configKey(base), configKey({ ...base, socksHost: 'de-fra-wg-socks5-001' }))
+  // the pair mergeAssignments singles out: a custom exit at the tunnel
+  // endpoint's address is the same ip:port as mullvad-direct under
+  // different rules, and one's verdict must not answer for the other
+  assert.notEqual(configKey(base), configKey({ ...base, host: 'custom:abc' }))
+  assert.notEqual(configKey({ ...base, host: 'x' }), configKey({ ...base, host: 'x', custom: true }))
+  assert.notEqual(configKey(base), configKey({ ...base, username: 'u' }))
+  assert.notEqual(configKey({ ...base, username: 'u' }), configKey({ ...base, username: 'u', password: 'p' }))
   assert.equal(configKey(undefined), '')
 })
 

@@ -1,6 +1,6 @@
 {
   "name": "bulkhead",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Firefox extension pinning each container to its own Mullvad SOCKS5 exit, with a fail-closed killswitch. Unofficial; not affiliated with Mullvad AB.",
   "author": "S4N-T0S (https://github.com/S4N-T0S)",
   "license": "GPL-3.0-only",

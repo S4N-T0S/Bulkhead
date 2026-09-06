@@ -136,6 +136,7 @@ function evaluate () {
     '[test] A blocked=true reason=proxy-down',
     '[test] A cancelled=true',
     '[test] A blockedpage shown=true',
+    '[test] A hint elsewhere=true',
     '[test] harden apply=ok clear=ok',
     '[test] F loopback off blocked=true',
     '[test] F loopback on passed=true',
@@ -150,8 +151,12 @@ function evaluate () {
     '[test] J recheck autohealed=true',
     '[test] E race notup=true'
   ]
+  // the tunnel run raises exactly one offline warning, so pinning the total
+  // proves the hook intercepts rather than just staying quiet
   if (tunnel) {
     expected.push(
+      '[test] notifications stray=0 total=1',
+      '[test] A relays refreshed=true triggered=true',
       '[test] D health=up passed=true',
       '[test] B health=up passed=true',
       '[test] C health=misrouted',
@@ -159,6 +164,7 @@ function evaluate () {
     )
   } else {
     expected.push(
+      '[test] notifications stray=0 total=0',
       '[test] D health=down blocked=true reason=proxy-down',
       '[test] D cancelled=true',
       '[test] D blockedpage shown=true',

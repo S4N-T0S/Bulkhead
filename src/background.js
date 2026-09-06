@@ -99,14 +99,15 @@ const blockLog = []
 // redirect survives, not just the cancellation.
 /** @type {{ t: number, container: string, reason: string } | null} */
 let lastBlockedPage = null
-/** @type {Record<string, string>} */
-let lastNotified = Object.create(null)
 /** @type {Set<string>} */
 const offlineNotified = new Set()
 // cookieStoreId -> the host the configured server appears to have been
 // renamed to, or '' when it looks like a genuine misroute
 /** @type {Record<string, string>} */
 const renamed = Object.create(null)
+// cookieStoreId -> container name, so the badge can be titled synchronously
+/** @type {Map<string, string>} */
+const names = new Map()
 
 /** @type {{ ts: number, source: string, relays: Relay[], offline: OfflineAssignment[] }} */
 let relayMemo = { ts: 0, source: '', relays: [], offline: [] }
@@ -143,15 +144,11 @@ async function hydrate () {
     // Health is never persisted: a restarted browser trusts nothing.
     const { containers, stale } = relaylib.mergeAssignments(state.containers, s.containers || {})
     state.containers = containers
-    // Notification bookkeeping follows the assignments. A leftover entry is
-    // not just dead weight: lastNotified still holding 'down' for an id that
-    // was unassigned would swallow the warning the next time that context is
-    // assigned and fails.
-    for (const id of Object.keys(lastNotified)) {
-      if (!(id in containers) || stale.includes(id)) delete lastNotified[id]
-    }
     for (const id of Object.keys(renamed)) {
       if (!(id in containers) || stale.includes(id)) delete renamed[id]
+    }
+    for (const id of names.keys()) {
+      if (!(id in containers)) names.delete(id)
     }
     // The recheck marker follows the config it judged. Left behind across a
     // reassignment, it would deny the new config the second look the old
@@ -164,7 +161,7 @@ async function hydrate () {
     state.hydrateError = ''
     log('[bulkhead] ready, managed:', Object.keys(containers))
     for (const id of stale) probe(id)
-    updateAllBadges()
+    Promise.all(Object.keys(containers).map(containerName)).then(updateAllBadges)
     checkAssignedOffline()
     checkDoh()
   })
@@ -565,6 +562,17 @@ async function checkDoh () {
   })
 }
 
+// A verdict against the exit. 'unknown' blocks as well, but is not one.
+/** @param {Health | undefined} health @returns {boolean} */
+function convicted (health) {
+  return health === 'down' || health === 'misrouted'
+}
+
+/** @returns {boolean} */
+function relayStillDown () {
+  return Object.values(state.containers).some(o => Boolean(o.socksHost) && convicted(o.health))
+}
+
 /** @param {string} id @param {Health} health @param {string} detail @param {string} [exitIp] */
 function markHealth (id, health, detail, exitIp) {
   const c = state.containers[id]
@@ -574,22 +582,21 @@ function markHealth (id, health, detail, exitIp) {
   c.healthDetail = detail
   c.healthAt = Date.now()
   c.exitIp = health === 'up' ? (exitIp || '') : ''
+  // Deliberately no notification on a verdict: relays drop on every reconnect
+  // and wake, a tunnel going down takes every container with it, and the
+  // badge and blocked page already say so.
   if (prev !== health) {
     log(`[bulkhead] ${id}: ${prev} -> ${health} (${detail})`)
-    if (health === 'up') {
-      // Allow the next failure to notify again, and the next mis-carried
-      // check to earn a fresh retry.
-      delete lastNotified[id]
-      rechecked.delete(id)
-    } else if (health !== 'unknown') {
-      // 'unknown' is the recheck parking state, not a verdict; if the retry
-      // convicts, the transition out of it notifies then.
-      notifyDown(id, health, detail)
-    }
+    if (health === 'up') rechecked.delete(id)
+    // A relay failing, or one recovering while another still fails: the two
+    // moments a retired server would show.
+    if (c.socksHost && convicted(health) && !convicted(prev)) refreshRelaysOnFailure(false)
+    else if (c.socksHost && health === 'up' && relayStillDown()) refreshRelaysOnFailure(true)
   }
-  // Outside the transition check: the badge title carries healthDetail, and
-  // a container that stays down for a new reason should not keep the old one.
-  updateBadgesFor(id)
+  // A verdict changes the hint on every other tab; a new detail for the same
+  // verdict only changes this container's own title.
+  if (convicted(prev) !== convicted(health)) updateAllBadges()
+  else updateBadgesFor(id)
 }
 
 // Confirmed containers are re-checked slowly, to catch an exit that changed
@@ -701,6 +708,15 @@ function badgeTab (tab) {
     title = 'Not protected — no exit assigned here'
   }
 
+  // The badge is per tab, so a container whose only tab is in the background
+  // would fail without a trace. Every other tab names it instead.
+  const elsewhere = Object.keys(state.containers)
+    .filter(id => id !== tab.cookieStoreId && convicted(state.containers[id].health))
+  if (elsewhere.length && !(c && convicted(c.health))) {
+    title += ` · blocked elsewhere: ${elsewhere.map(id => names.get(id) || id).join(', ')}`
+    if (text === '·') color = '#c50042'
+  }
+
   // A tab can close between the query that found it and these three calls,
   // and each would reject with "Invalid tab ID" -- noise that would bury a
   // real error in a console this page keeps for weeks.
@@ -711,37 +727,34 @@ function badgeTab (tab) {
 }
 
 browser.tabs.onUpdated.addListener((tabId, info, tab) => {
-  if (tab.cookieStoreId && state.containers[tab.cookieStoreId]) badgeTab(tab)
+  if (Object.keys(state.containers).length) badgeTab(tab)
 })
-
-/** @param {string} id @param {Health} health @param {string} detail */
-async function notifyDown (id, health, detail) {
-  // One notification per transition, never per blocked request.
-  if (lastNotified[id] === health) return
-  lastNotified[id] = health
-  const name = await containerName(id)
-  const c = state.containers[id]
-  browser.notifications.create(`bulkhead-${id}`, {
-    type: 'basic',
-    title: `${name}: blocked`,
-    message: `${fmt.explainDetail(detail, c && c.custom)}\nNew requests are blocked, not sent direct. Pages already open stay put — reload one for details.`.trim()
-  })
-}
 
 /** @param {string} id @returns {Promise<string>} */
 async function containerName (id) {
+  let name
   // neither is a contextual identity, so the lookup below rejects and the
-  // fallback would title a notification "se-got-wg-001: blocked"
-  if (id === 'firefox-default') return 'No container'
-  if (id === 'firefox-private') return 'Private windows'
-  try {
-    const ident = await browser.contextualIdentities.get(id)
-    return ident.name
-  } catch {
-    const c = state.containers[id]
-    return c ? fmt.exitName(c) : id
+  // fallback would name the context after its own exit
+  if (id === 'firefox-default') name = 'No container'
+  else if (id === 'firefox-private') name = 'Private windows'
+  else {
+    try {
+      name = (await browser.contextualIdentities.get(id)).name
+    } catch {
+      const c = state.containers[id]
+      name = c ? fmt.exitName(c) : id
+    }
   }
+  names.set(id, name)
+  return name
 }
+
+browser.contextualIdentities.onUpdated.addListener(({ contextualIdentity }) => {
+  const id = contextualIdentity.cookieStoreId
+  if (!(id in state.containers)) return
+  names.set(id, contextualIdentity.name)
+  updateAllBadges()
+})
 
 browser.contextualIdentities.onRemoved.addListener(({ contextualIdentity }) => {
   unassign(contextualIdentity.cookieStoreId).catch(() => null)
@@ -797,6 +810,24 @@ async function refreshRelays (force) {
   log(`[bulkhead] relay list: ${relays.length} servers via ${source}`)
   checkAssignedOffline()
   return relayMemo
+}
+
+// A relay failing may mean a retired server, which the daily refresh alone
+// would report a day late. The hourly cap guards the drop, where every
+// container fails at once and the attempt mostly cannot get out; a recovery
+// is when it can, so that signal only needs the list to be stale. With the
+// default context unmanaged the list is fetched bare from the user's own
+// address: the request the daily refresh already makes, now timed to the drop.
+const RELAY_RECHECK_MS = 60 * 60 * 1000
+let relayRecheckAt = 0
+
+/** @param {boolean} recovering */
+function refreshRelaysOnFailure (recovering) {
+  const now = Date.now()
+  if (now - relayMemo.ts < RELAY_RECHECK_MS) return
+  if (!recovering && now - relayRecheckAt < RELAY_RECHECK_MS) return
+  relayRecheckAt = now
+  refreshRelays(true).catch(() => null)
 }
 
 async function loadRelayCache () {

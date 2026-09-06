@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT */
+/* global state, blockLog, lastBlockedPage, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT */
 
 ;(() => {
   /** @param {string} line */
@@ -30,6 +30,16 @@
     d => outcomes.set(d.url, 'completed'), { urls: ['<all_urls>'] })
   browser.webRequest.onErrorOccurred.addListener(
     d => outcomes.set(d.url, d.error), { urls: ['<all_urls>'] })
+
+  // Every notification the run creates. getAll() only lists ones still
+  // showing, and headless Firefox may never show any.
+  /** @type {string[]} */
+  const notified = []
+  const createNotification = browser.notifications.create
+  browser.notifications.create = (id, opts) => {
+    notified.push(String(id))
+    return createNotification.call(browser.notifications, id, opts)
+  }
 
   /** @param {() => boolean} cond @param {number} ms */
   async function waitFor (cond, ms) {
@@ -62,6 +72,10 @@
     const dead = await browser.contextualIdentities.create({ name: 'bulkhead-dead', color: 'red', icon: 'circle' })
     const deadId = dead.cookieStoreId
     const stored = { ip: '10.124.255.254', port: 1080, host: 'test-dead', socksHost: 'test-dead-socks5', city: 'Nowhere', country: 'Nowhere', cc: 'xx' }
+    // A relay-backed failure fetches the relay list. Without a tunnel that
+    // lands over the runner's own connection and seeds the cache case D
+    // needs empty, so the trigger is parked here; the tunnel run asserts it.
+    if (!TEST_TUNNEL) relayRecheckAt = Date.now()
     await browser.storage.local.set({ containers: { [deadId]: stored } })
     await waitFor(() => {
       const c = state.containers[deadId]
@@ -69,6 +83,10 @@
     }, 15000)
     const deadHealth = state.containers[deadId] && state.containers[deadId].health
     t(`A health=${deadHealth}`)
+    if (TEST_TUNNEL) {
+      const refreshed = await waitFor(() => relayMemo.relays.length > 0, 30000)
+      t(`A relays refreshed=${refreshed} triggered=${relayRecheckAt > 0} source=${relayMemo.source}`)
+    }
 
     const deadTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-dead', cookieStoreId: deadId, active: false })
     await sleep(5000)
@@ -83,6 +101,17 @@
     await waitFor(() => Boolean(lastBlockedPage && lastBlockedPage.container === deadId), 6000)
     t(`A blockedpage shown=${Boolean(lastBlockedPage && lastBlockedPage.container === deadId)}`)
     if (deadTab.id !== undefined) await browser.tabs.remove(deadTab.id)
+
+    // The badge is per tab, so a blocked container with no tab in front is
+    // named in every other tab's title instead.
+    const otherTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-hint', active: false })
+    let hint = ''
+    for (let i = 0; i < 32 && !hint.includes('blocked elsewhere'); i++) {
+      await sleep(250)
+      if (otherTab.id !== undefined) hint = await browser.browserAction.getTitle({ tabId: otherTab.id })
+    }
+    t(`A hint elsewhere=${hint.includes('blocked elsewhere: bulkhead-dead')} title=${hint}`)
+    if (otherTab.id !== undefined) await browser.tabs.remove(otherTab.id)
 
     // Hardening: apply must take control of both settings, clear must give
     // them back untouched.
@@ -348,6 +377,11 @@
     t(`E race notup=${Boolean(raced) && raced.health !== 'up'} health=${raced && raced.health}`)
 
     await browser.contextualIdentities.remove(deadId).catch(() => null)
+
+    // Only the once-per-event warnings may fire: a retired server (with a
+    // tunnel, test-dead is one) and DoH. A verdict never does.
+    const stray = notified.filter(n => !n.startsWith('bulkhead-offline-') && n !== 'bulkhead-doh')
+    t(`notifications stray=${stray.length} total=${notified.length}${stray.length ? ` ids=${stray.join(',')}` : ''}`)
     t('done')
   }
 

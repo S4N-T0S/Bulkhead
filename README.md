@@ -143,9 +143,10 @@ than the one configured blocks the container as `misrouted`.
   nothing else. Under default preferences Firefox does not proxy these
   addresses in the first place (`network.proxy.allow_hijacking_localhost`),
   so the toggle opens the killswitch for them, not a new route.
-- Offline awareness: the relay list refreshes daily, servers out of service
-  disappear from the picker, and if one of *your* assigned exits goes offline
-  you get told, with a one-click move to the same city.
+- Offline awareness: the relay list refreshes daily and again when one of
+  your relays stops answering, servers out of service disappear from the
+  picker, and if one of *your* assigned exits goes offline you get told, with
+  a one-click move to the same city.
 - A blocked page that names the container, the exit and the reason, instead
   of a blank network error.
 - Continuous DoH detection, because a setting you were asked to change once
@@ -154,7 +155,8 @@ than the one configured blocks the container as `misrouted`.
   prerendering off. Global settings, so they are never applied silently, and
   fully restored when you switch them off.
 - Per-tab toolbar badge: nothing when the exit is verified, `?` while
-  checking, `!` when blocked.
+  checking, `!` when blocked. Its title also names any other container whose
+  server has failed, since a container's own badge only shows on its own tabs.
 
 Bulkhead decides how a container reaches the network, not which sites open
 in which container — that is Mozilla's [Multi-Account Containers], and the
@@ -186,7 +188,8 @@ webRequest.onError     hard proxy errors trip health instantly. Errors that
 
 alarms                 probe non-up containers every 30s to recover; sweep
                        healthy ones every 10m to catch silent misroutes;
-                       refresh the relay list daily.
+                       refresh the relay list daily, and when a relay fails,
+                       to catch a retired server.
 ```
 
 Every allow/block rule lives in [`src/decide.js`](src/decide.js) as one pure

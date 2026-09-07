@@ -198,12 +198,15 @@
 
   /**
    * Managed containers whose assigned relay has vanished from the list or
-   * gone inactive -- the case that actually bites. Assignments that do not
-   * point at a listed relay (an empty socksHost means "any Mullvad exit",
-   * i.e. the tunnel's own 10.64.0.1 endpoint) have no offline state here.
+   * gone inactive -- the case that actually bites. `listed` tells the two
+   * apart: an inactive entry is Mullvad saying so, an absent one only says
+   * the list changed, and whether it still answers is the probe's call.
+   * Assignments that do not point at a listed relay (an empty socksHost
+   * means "any Mullvad exit", i.e. the tunnel's own 10.64.0.1 endpoint)
+   * have no offline state here.
    * @param {Record<string, ContainerConfig>} containers
    * @param {Relay[]} relays
-   * @returns {{ cookieStoreId: string, host: string, alternative: Relay | undefined }[]}
+   * @returns {OfflineAssignment[]}
    */
   function offlineAssigned (containers, relays) {
     const out = []
@@ -216,7 +219,7 @@
       if (r && r.active) continue
       const alternative = alternativeFor(relays, r || { host: c.host, city: c.city, cc: c.cc }, taken)
       if (alternative) taken.add(alternative.host)
-      out.push({ cookieStoreId, host: c.host, alternative })
+      out.push({ cookieStoreId, host: c.host, listed: Boolean(r), alternative })
     }
     return out
   }

@@ -148,9 +148,10 @@ than the one configured blocks the container as `misrouted`.
   so the toggle opens the killswitch for them, not a new route.
 - Offline awareness: the relay list refreshes daily and again when one of
   your relays stops answering, servers out of service disappear from the
-  picker, and if one of *your* assigned exits goes offline you get told, with
-  a one-click move to a server in the same city, or the same country, that
-  nothing else uses.
+  picker, and if one of *your* assigned exits is taken out of service, or
+  quietly drops off the list, you get told, and told whether it still
+  answers — the list and the server can disagree — with a one-click move to
+  a server in the same city, or the same country, that nothing else uses.
 - A blocked page that names the container, the exit and the reason, instead
   of a blank network error.
 - Continuous DoH detection, because a setting you were asked to change once

@@ -856,18 +856,25 @@ async function checkAssignedOffline () {
   if (!state.ready || !relayMemo.relays.length) return
   const offline = relaylib.offlineAssigned(state.containers, relayMemo.relays)
   relayMemo.offline = offline
-  const current = new Set(offline.map(o => o.host))
+  // Forgotten only once the host is unassigned: the two list sources need
+  // not agree on membership, and a host that flaps between them must not
+  // ring on every refresh.
+  const assigned = new Set(Object.values(state.containers).map(c => c.host))
   for (const host of offlineNotified) {
-    if (!current.has(host)) offlineNotified.delete(host)
+    if (!assigned.has(host)) offlineNotified.delete(host)
   }
   for (const o of offline) {
     if (offlineNotified.has(o.host)) continue
     offlineNotified.add(o.host)
     const name = await containerName(o.cookieStoreId)
+    // Absent from the list is not the same as dead: the probe keeps judging
+    // the server, and traffic follows its verdict either way.
     browser.notifications.create(`bulkhead-offline-${o.host}`, {
       type: 'basic',
-      title: `${o.host} is offline`,
-      message: `The server assigned to "${name}" is out of service. Pick another in the extension settings.`
+      title: o.listed ? `${o.host} is out of service` : `${o.host} has left Mullvad's server list`,
+      message: o.listed
+        ? `The server assigned to "${name}" is out of service. Pick another in the extension settings.`
+        : `The server assigned to "${name}" is no longer listed. It keeps working while it answers and is blocked if it stops; pick another in the extension settings when you can.`
     })
   }
 }

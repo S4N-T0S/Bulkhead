@@ -101,6 +101,17 @@
 
   // -- offline warnings
 
+  // The probe decides this, not the list: a server can drop off the list
+  // and keep answering.
+  /** @param {Omit<ContainerConfig, 'password'> | undefined} c @param {boolean} listed @returns {string} */
+  function trafficNote (c, listed) {
+    const health = c && c.health
+    if (health === 'up') return 'It still answers, so traffic is flowing for now.'
+    if (health === 'unknown') return 'Its traffic is blocked while the check runs.'
+    if (health === 'misrouted') return 'Its traffic is blocked: it came out at the wrong server.'
+    return listed ? 'Its traffic stays blocked until you move it.' : 'It is not answering, so its traffic is blocked.'
+  }
+
   function renderOffline () {
     const box = $('offline-banner')
     box.textContent = ''
@@ -157,14 +168,15 @@
     for (const o of snapshot.relays.offline) {
       const ident = identities.find(i => i.cookieStoreId === o.cookieStoreId)
       const who = ident ? ident.name : contextName(o.cookieStoreId)
+      const c = snapshot.containers[o.cookieStoreId]
       const banner = document.createElement('div')
-      banner.className = 'banner danger'
+      banner.className = `banner ${c && c.health === 'up' ? 'warn' : 'danger'}`
       const p = document.createElement('div')
       const b = document.createElement('strong')
       b.textContent = o.host
-      p.append(b, document.createTextNode(
-        ` — the server assigned to “${who}” is out of service. Its traffic stays blocked until you move it.`
-      ))
+      p.append(b, document.createTextNode((o.listed
+        ? ` — Mullvad has taken the server assigned to “${who}” out of service. `
+        : ` — the server assigned to “${who}” has gone from Mullvad's server list. `) + trafficNote(c, o.listed)))
       banner.append(p)
 
       const row = document.createElement('div')

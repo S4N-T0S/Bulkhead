@@ -142,6 +142,8 @@ test('offlineAssigned flags inactive and vanished assignments with a replacement
   assert.deepEqual(out.map(o => o.host), ['de-fra-wg-002', 'us-nyc-wg-999'])
   assert.equal(out[0].alternative.host, 'de-fra-wg-001')
   assert.equal(out[1].alternative, undefined)
+  // inactive is Mullvad's word; absent says nothing about whether it answers
+  assert.deepEqual(out.map(o => o.listed), [true, false])
 })
 
 test('mergeAssignments keeps health only where the proxy config is unchanged', () => {

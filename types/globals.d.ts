@@ -75,6 +75,8 @@ interface Relay {
 interface OfflineAssignment {
   cookieStoreId: string
   host: string
+  /** Still in the list but inactive; false when it has gone from the list */
+  listed: boolean
   alternative: Relay | undefined
 }
 

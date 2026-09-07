@@ -2,7 +2,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  adaptPublic, adaptTunnel, searchRelays, groupByLocation, findRelay,
+  adaptPublic, adaptTunnel, fromCache, searchRelays, groupByLocation, findRelay,
   alternativeFor, assignedElsewhere, offlineAssigned, mergeAssignments, isTunnelAddress, configKey, renamedTo
 } = require('../../src/relays.js')
 
@@ -318,4 +318,13 @@ test('assignedElsewhere skips entries without a host and tolerates an unknown ex
   const base = { ip: '10.124.0.1', port: 1080, socksHost: 'x', city: '', country: '', cc: '' }
   const containers = { a: { ...base, host: 'se-got-wg-001' }, b: { ...base, host: '' }, c: null }
   assert.deepEqual([...assignedElsewhere(containers, 'not-a-key')], [['se-got-wg-001', ['a']]])
+})
+
+test('fromCache takes back exactly what was cached and nothing looser', () => {
+  assert.deepEqual(fromCache(LIST), LIST)
+  // the cache holds the canonical shape, which the raw adapter cannot read
+  assert.throws(() => adaptPublic(LIST))
+  assert.throws(() => fromCache([publicEntry()]))
+  assert.throws(() => fromCache('nope'))
+  assert.deepEqual(fromCache([...LIST, null, { host: 'net<script>' }, { ...LIST[0], socksHost: 'bad' }, { ...LIST[0], socksName: '' }]), LIST)
 })

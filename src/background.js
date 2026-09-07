@@ -835,12 +835,12 @@ async function loadRelayCache () {
   if (!relayCache || !Array.isArray(relayCache.relays)) return
   // A list off the network goes through the adapters, which validate every
   // field; this one comes back from disk and has never been checked since.
-  // Put it through the same adapter rather than trusting it -- a truncated
-  // or hand-edited entry would otherwise reach the picker and the snapshot
+  // Check it as strictly rather than trusting it -- a truncated or
+  // hand-edited entry would otherwise reach the picker and the snapshot
   // every page reads.
   let relays
   try {
-    relays = relaylib.adaptPublic(relayCache.relays)
+    relays = relaylib.fromCache(relayCache.relays)
   } catch (e) {
     log('[bulkhead] discarding an unusable relay cache:', e instanceof Error ? e.message : String(e))
     await browser.storage.local.remove('relayCache')

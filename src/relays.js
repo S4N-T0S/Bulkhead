@@ -109,6 +109,41 @@
     return sortRelays(out)
   }
 
+  /**
+   * The cached list: canonical already, but off disk and unchecked since it
+   * was written, so every field is validated rather than trusted.
+   * @param {unknown} json
+   * @returns {Relay[]}
+   */
+  function fromCache (json) {
+    if (!Array.isArray(json)) throw new Error('relay cache: expected an array')
+    /** @type {Relay[]} */
+    const out = []
+    for (const r of json) {
+      if (!r || typeof r !== 'object') continue
+      const e = /** @type {Record<string, unknown>} */ (r)
+      const host = str(e.host)
+      const socksHost = str(e.socksHost)
+      const socksName = str(e.socksName)
+      if (!HOST_RE.test(host) || !SOCKS_RE.test(socksHost) || !socksName) continue
+      out.push({
+        host,
+        socksName,
+        socksHost,
+        socksPort: port(e.socksPort),
+        cc: str(e.cc).toLowerCase(),
+        country: str(e.country),
+        city: str(e.city),
+        active: e.active === true,
+        owned: e.owned === true,
+        speed: num(e.speed, 0),
+        messages: Array.isArray(e.messages) ? e.messages.map(message).filter(Boolean) : []
+      })
+    }
+    if (!out.length) throw new Error('relay cache: no usable relays')
+    return sortRelays(out)
+  }
+
   /** @param {Relay[]} relays @returns {Relay[]} */
   function sortRelays (relays) {
     return relays.slice().sort((a, b) =>
@@ -322,6 +357,7 @@
   const api = {
     adaptPublic,
     adaptTunnel,
+    fromCache,
     searchRelays,
     groupByLocation,
     findRelay,

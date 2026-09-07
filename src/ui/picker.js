@@ -25,6 +25,12 @@
     const filters = { ownedOnly: false }
     const favorites = new Set(opts.favorites)
     const customs = Array.isArray(opts.customExits) ? opts.customExits : []
+    const assigned = opts.assigned || {}
+
+    // The open "share it?" block. Any re-render drops it rather than putting
+    // it back: a rebuilt list starts at the top, so there is nothing to keep.
+    /** @type {{ row: HTMLButtonElement, block: HTMLElement, origin: 'row' | 'search', openedAt: number } | null} */
+    let pending = null
 
     const filterDefs = /** @type {const} */ ([
       ['Mullvad-owned', () => { filters.ownedOnly = !filters.ownedOnly }, () => filters.ownedOnly]
@@ -70,6 +76,107 @@
       return b
     }
 
+    /** @param {string} host @returns {string[] | undefined} */
+    function inUse (host) {
+      const names = assigned[host]
+      return Array.isArray(names) && names.length ? names : undefined
+    }
+
+    // The current host only shows up in `assigned` when it is already
+    // shared; re-picking it never asks.
+    /** @param {string} host @returns {string[] | undefined} */
+    function confirmable (host) {
+      return host === opts.currentHost ? undefined : inUse(host)
+    }
+
+    /** @param {string} host @returns {string} */
+    function displayName (host) {
+      const cx = customs.find(e => `custom:${e.id}` === host)
+      return cx ? cx.label : host
+    }
+
+    /** @param {HTMLButtonElement} b @param {string} host */
+    function markInUse (b, host) {
+      const names = inUse(host)
+      if (!names) return
+      const who = document.createElement('span')
+      who.className = 'inuse'
+      who.textContent = `used by ${fmt.nameList(names)}`
+      who.title = `Used by ${fmt.nameList(names)}`
+      b.append(who)
+      if (confirmable(host)) b.setAttribute('aria-expanded', 'false')
+    }
+
+    // A pointer click this soon after opening is the tail of a double-click:
+    // on the row it would toggle the block away, and on "Share anyway" it
+    // would assign. Keyboard activation arrives with detail 0 and is never
+    // held back.
+    /** @param {MouseEvent} e @returns {boolean} */
+    function bounce (e) {
+      return e.detail > 0 && pending !== null && performance.now() - pending.openedAt < 400
+    }
+
+    /** @param {HTMLButtonElement} b @param {string} host @param {MouseEvent} e */
+    function pick (b, host, e) {
+      const names = confirmable(host)
+      if (!names) opts.onPick(host)
+      else if (!pending || pending.row !== b) openConfirm(b, host, names, 'row')
+      else if (!bounce(e)) closeConfirm()
+    }
+
+    /** @param {HTMLButtonElement} row @param {string} host @param {string[]} names @param {'row' | 'search'} origin */
+    function openConfirm (row, host, names, origin) {
+      closeConfirm()
+      const wrap = row.closest('.picker-rowwrap')
+      if (!wrap) return
+
+      const block = document.createElement('div')
+      block.className = 'picker-confirm'
+      block.id = 'picker-confirm'
+      block.setAttribute('role', 'group')
+      block.setAttribute('aria-label', `Share ${displayName(host)}?`)
+      const why = document.createElement('p')
+      why.id = 'picker-confirm-why'
+      why.textContent = `Already used by ${fmt.nameList(names)}. Share it and ${names.length > 1 ? 'all of them' : 'both'} come out at the same address, which links them together.`
+
+      const keep = document.createElement('button')
+      keep.textContent = 'Keep looking'
+      keep.setAttribute('aria-describedby', why.id)
+      keep.addEventListener('click', () => {
+        closeConfirm()
+        ;(origin === 'search' ? search : row).focus()
+      })
+      const share = document.createElement('button')
+      share.className = 'quiet'
+      share.textContent = 'Share anyway'
+      share.setAttribute('aria-describedby', why.id)
+      share.addEventListener('click', (e) => {
+        if (!bounce(e)) opts.onPick(host)
+      })
+      const actions = document.createElement('div')
+      actions.className = 'row'
+      actions.append(keep, share)
+      block.append(why, actions)
+
+      wrap.after(block)
+      wrap.classList.add('open')
+      row.setAttribute('aria-expanded', 'true')
+      row.setAttribute('aria-controls', block.id)
+      pending = { row, block, origin, openedAt: performance.now() }
+      block.scrollIntoView({ block: 'nearest' })
+      keep.focus({ preventScroll: true })
+    }
+
+    function closeConfirm () {
+      if (!pending) return
+      const { row, block } = pending
+      block.remove()
+      row.closest('.picker-rowwrap')?.classList.remove('open')
+      row.setAttribute('aria-expanded', 'false')
+      row.removeAttribute('aria-controls')
+      pending = null
+    }
+
     // A row is a button plus a sibling star, never a button inside a button:
     // nesting interactive content is undefined for assistive tech, and the
     // outer control swallows the inner one's name.
@@ -104,7 +211,9 @@
         b.append(note)
       }
 
-      b.addEventListener('click', () => opts.onPick(r.host))
+      markInUse(b, r.host)
+
+      b.addEventListener('click', e => pick(b, r.host, e))
 
       const star = document.createElement('button')
       star.className = 'star'
@@ -127,21 +236,27 @@
     // list, while custom exits already sit in their own pinned group.
     /** @param {Omit<CustomExit, 'password'>} e @returns {HTMLElement} */
     function customRow (e) {
+      const wrap = document.createElement('div')
+      wrap.className = 'picker-rowwrap'
+      const host = `custom:${e.id}`
       const b = document.createElement('button')
       b.className = 'picker-row'
-      b.dataset.host = `custom:${e.id}`
-      if (opts.currentHost === `custom:${e.id}`) b.setAttribute('aria-current', 'true')
+      b.dataset.host = host
+      if (opts.currentHost === host) b.setAttribute('aria-current', 'true')
       const name = document.createElement('span')
       name.textContent = e.label
       const sub = document.createElement('span')
       sub.className = 'sub'
       sub.textContent = `${e.host}:${e.port}`
       b.append(name, sub)
-      b.addEventListener('click', () => opts.onPick(`custom:${e.id}`))
-      return b
+      markInUse(b, host)
+      b.addEventListener('click', e => pick(b, host, e))
+      wrap.append(b)
+      return wrap
     }
 
     function renderList () {
+      closeConfirm()
       const q = search.value
       const matches = relaylib.searchRelays(opts.relays, q, filters)
       const needle = q.trim().toLowerCase()
@@ -236,8 +351,15 @@
       // Only commit to a search result. With an empty box the first row is
       // the pinned tunnel entry, and Enter would silently reassign to it.
       if (e.key === 'Enter' && search.value.trim()) {
+        // Consumed here, or Gecko hands this Enter's keypress to whichever
+        // button gets focus below.
+        e.preventDefault()
         const first = list.querySelector('.picker-row:not(.picker-tunnel)')
-        if (first instanceof HTMLElement && first.dataset.host) opts.onPick(first.dataset.host)
+        if (!(first instanceof HTMLButtonElement) || !first.dataset.host) return
+        const host = first.dataset.host
+        const names = confirmable(host)
+        if (names) openConfirm(first, host, names, 'search')
+        else opts.onPick(host)
       }
     })
 
@@ -246,6 +368,15 @@
     list.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
       const rows = [...list.querySelectorAll('.picker-row')]
+      if (pending && pending.block.contains(document.activeElement)) {
+        e.preventDefault()
+        const { row, origin } = pending
+        const next = rows[rows.indexOf(row) + 1]
+        closeConfirm()
+        if (e.key === 'ArrowUp') (origin === 'search' ? search : row).focus()
+        else (next instanceof HTMLElement ? next : row).focus()
+        return
+      }
       const i = rows.indexOf(/** @type {Element} */ (document.activeElement))
       if (i === -1) return
       e.preventDefault()

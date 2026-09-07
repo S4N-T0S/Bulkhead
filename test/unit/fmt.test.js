@@ -2,7 +2,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  timeAgo, healthLabel, healthClass, explainDetail, rawDetail, flagSrc, relayTags
+  timeAgo, healthLabel, healthClass, explainDetail, rawDetail, flagSrc, relayTags, nameList, usedBy
 } = require('../../src/ui/fmt.js')
 
 test('timeAgo covers every bucket and its boundaries', () => {
@@ -106,4 +106,21 @@ test('relayTags marks ownership and only out-of-the-ordinary speed', () => {
   assert.deepEqual(relayTags({ ...base, owned: true }), ['owned'])
   assert.deepEqual(relayTags({ ...base, speed: 40 }), [])
   assert.deepEqual(relayTags({ owned: true, speed: 100 }), ['owned', '100G'])
+})
+
+test('nameList reads as English for one, two and more names', () => {
+  assert.equal(nameList([]), '')
+  assert.equal(nameList(['Work']), 'Work')
+  assert.equal(nameList(['Work', 'Banking']), 'Work and Banking')
+  assert.equal(nameList(['Work', 'Banking', 'Shopping']), 'Work, Banking and Shopping')
+})
+
+test('usedBy names the contexts on each host and never shows a raw id', () => {
+  const assigned = new Map([['se-got-wg-001', ['firefox-container-1', 'firefox-container-9']], ['custom:abc', ['firefox-default']]])
+  const names = { 'firefox-container-1': 'Work', 'firefox-default': 'No container' }
+  assert.deepEqual(usedBy(assigned, names), {
+    'se-got-wg-001': ['Work', 'another container'],
+    'custom:abc': ['No container']
+  })
+  assert.deepEqual(usedBy(new Map(), names), {})
 })

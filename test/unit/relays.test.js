@@ -3,7 +3,7 @@ const test = require('node:test')
 const assert = require('node:assert')
 const {
   adaptPublic, adaptTunnel, searchRelays, groupByLocation, findRelay,
-  alternativeFor, offlineAssigned, mergeAssignments, isTunnelAddress, configKey, renamedTo
+  alternativeFor, assignedElsewhere, offlineAssigned, mergeAssignments, isTunnelAddress, configKey, renamedTo
 } = require('../../src/relays.js')
 
 function publicEntry (over = {}) {
@@ -243,4 +243,77 @@ test('mergeAssignments treats credentials as config', () => {
   const { containers, stale } = mergeAssignments({ c1: a }, { c1: { ...a, password: 'q' } })
   assert.equal(containers.c1.health, 'unknown')
   assert.deepEqual(stale, ['c1'])
+})
+
+test('alternativeFor skips servers that are taken', () => {
+  const gone = findRelay(LIST, 'se-got-wg-002')
+  assert.equal(alternativeFor(LIST, gone, new Set(['se-got-wg-001'])).host, 'se-sto-wg-001')
+  assert.equal(alternativeFor(LIST, gone, new Set(['se-got-wg-001', 'se-sto-wg-001'])), undefined)
+})
+
+test('offlineAssigned never suggests a server another context already uses', () => {
+  const got = { ip: '10.124.0.1', port: 1080, socksHost: 'x', city: 'Gothenburg', country: 'Sweden', cc: 'se' }
+  const containers = {
+    'firefox-container-1': { ...got, host: 'se-got-wg-009' },
+    'firefox-container-2': { ...got, host: 'se-got-wg-001' }
+  }
+  const [o] = offlineAssigned(containers, LIST)
+  assert.equal(o.cookieStoreId, 'firefox-container-1')
+  assert.equal(o.alternative.host, 'se-got-wg-002')
+
+  // the only same-country server is in use: no suggestion rather than a shared exit
+  const fra = { ip: '10.124.0.1', port: 1080, socksHost: 'x', city: 'Frankfurt', country: 'Germany', cc: 'de' }
+  const [only] = offlineAssigned({
+    'firefox-container-1': { ...fra, host: 'de-fra-wg-002' },
+    'firefox-container-2': { ...fra, host: 'de-fra-wg-001' }
+  }, LIST)
+  assert.equal(only.host, 'de-fra-wg-002')
+  assert.equal(only.alternative, undefined)
+})
+
+test('offlineAssigned gives two offline containers in one city different suggestions', () => {
+  const got = { ip: '10.124.0.1', port: 1080, socksHost: 'x', city: 'Gothenburg', country: 'Sweden', cc: 'se' }
+  const out = offlineAssigned({
+    'firefox-container-1': { ...got, host: 'se-got-wg-008' },
+    'firefox-container-2': { ...got, host: 'se-got-wg-009' }
+  }, LIST)
+  assert.deepEqual(out.map(o => o.alternative.host), ['se-got-wg-001', 'se-got-wg-002'])
+})
+
+test('assignedElsewhere maps hosts to the other contexts using them', () => {
+  const base = { ip: '10.124.0.1', port: 1080, socksHost: 'x', city: '', country: '', cc: '' }
+  const containers = {
+    a: { ...base, host: 'se-got-wg-001' },
+    b: { ...base, host: 'se-got-wg-001' },
+    c: { ...base, host: 'de-fra-wg-001' },
+    d: { ...base, host: 'custom:abc', socksHost: '', custom: true },
+    // shared by design, so never reported
+    e: { ...base, host: 'mullvad-direct', socksHost: '' }
+  }
+  assert.deepEqual([...assignedElsewhere(containers)], [
+    ['se-got-wg-001', ['a', 'b']],
+    ['de-fra-wg-001', ['c']],
+    ['custom:abc', ['d']]
+  ])
+  assert.deepEqual([...assignedElsewhere(containers, 'a')], [
+    ['se-got-wg-001', ['b']],
+    ['de-fra-wg-001', ['c']],
+    ['custom:abc', ['d']]
+  ])
+  assert.equal(assignedElsewhere({}).size, 0)
+})
+
+test('offlineAssigned separates two containers that lost the same server', () => {
+  const got = { ip: '10.124.0.1', port: 1080, socksHost: 'x', city: 'Gothenburg', country: 'Sweden', cc: 'se' }
+  const out = offlineAssigned({
+    'firefox-container-1': { ...got, host: 'se-got-wg-009' },
+    'firefox-container-2': { ...got, host: 'se-got-wg-009' }
+  }, LIST)
+  assert.deepEqual(out.map(o => o.alternative.host), ['se-got-wg-001', 'se-got-wg-002'])
+})
+
+test('assignedElsewhere skips entries without a host and tolerates an unknown except id', () => {
+  const base = { ip: '10.124.0.1', port: 1080, socksHost: 'x', city: '', country: '', cc: '' }
+  const containers = { a: { ...base, host: 'se-got-wg-001' }, b: { ...base, host: '' }, c: null }
+  assert.deepEqual([...assignedElsewhere(containers, 'not-a-key')], [['se-got-wg-001', ['a']]])
 })

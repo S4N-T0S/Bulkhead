@@ -2,7 +2,7 @@
 // One popup for every tab; it branches on the active tab's container. The
 // popup itself is an extension page, not part of any container.
 
-/* global fmt, createPicker */
+/* global relaylib, fmt, createPicker */
 
 ;(() => {
   const view = /** @type {HTMLElement} */ (document.getElementById('view'))
@@ -127,7 +127,7 @@
   }
 
   function contextLabel () {
-    return cookieStoreId === 'firefox-private' ? 'Private window' : 'No container'
+    return cookieStoreId === 'firefox-private' ? 'Private windows' : 'No container'
   }
 
   function renderBuiltinUnmanaged () {
@@ -323,6 +323,7 @@
       recents: snapshot.recents,
       favorites: snapshot.favorites,
       currentHost,
+      assigned: fmt.usedBy(relaylib.assignedElsewhere(snapshot.containers, cookieStoreId), snapshot.names),
       onFavorite: (host, on) => {
         browser.runtime.sendMessage({ cmd: 'favorite', host, on })
       },

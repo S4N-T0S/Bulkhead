@@ -147,7 +147,20 @@
     return tags
   }
 
-  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, flagSrc, relayTags, exitName }
+  /** @param {string[]} names @returns {string} */
+  function nameList (names) {
+    if (names.length < 2) return names[0] || ''
+    return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  }
+
+  // Who else is on a host, by name. An id the badge cache has not named yet
+  // was assigned moments ago, not deleted.
+  /** @param {Map<string, string[]>} assigned @param {Record<string, string>} names @returns {Record<string, string[]>} */
+  function usedBy (assigned, names) {
+    return Object.fromEntries([...assigned].map(([host, ids]) => [host, ids.map(id => names[id] || 'another container')]))
+  }
+
+  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, flagSrc, relayTags, exitName, nameList, usedBy }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

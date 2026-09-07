@@ -164,15 +164,36 @@
 
   /**
    * Replacement suggestion when a relay goes offline: same city first, then
-   * same country.
+   * same country, never a server in `taken`. A one-click move must not
+   * quietly point two containers at the same exit.
    * @param {Relay[]} relays
    * @param {{ host: string, city: string, cc: string }} gone
+   * @param {Set<string>} [taken] hosts to skip
    * @returns {Relay | undefined}
    */
-  function alternativeFor (relays, gone) {
-    const usable = relays.filter(r => r.active && r.host !== gone.host)
+  function alternativeFor (relays, gone, taken = new Set()) {
+    const usable = relays.filter(r => r.active && r.host !== gone.host && !taken.has(r.host))
     return usable.find(r => r.cc === gone.cc && r.city === gone.city)
       || usable.find(r => r.cc === gone.cc)
+  }
+
+  /**
+   * Hosts assigned to contexts other than `except`, and by whom. The tunnel
+   * exit is left out: it follows the app's server and is shared by design.
+   * @param {Record<string, ContainerConfig>} containers
+   * @param {string} [except] the context being edited
+   * @returns {Map<string, string[]>} host -> cookieStoreIds
+   */
+  function assignedElsewhere (containers, except) {
+    /** @type {Map<string, string[]>} */
+    const out = new Map()
+    for (const [id, c] of Object.entries(containers)) {
+      if (id === except || !c || !c.host || c.host === 'mullvad-direct') continue
+      const ids = out.get(c.host) || []
+      ids.push(id)
+      out.set(c.host, ids)
+    }
+    return out
   }
 
   /**
@@ -186,15 +207,16 @@
    */
   function offlineAssigned (containers, relays) {
     const out = []
+    // Grows with each suggestion, so two offline containers in one city are
+    // not both sent to the same replacement.
+    const taken = new Set(assignedElsewhere(containers).keys())
     for (const [cookieStoreId, c] of Object.entries(containers)) {
       if (!c.socksHost) continue
       const r = findRelay(relays, c.host)
       if (r && r.active) continue
-      out.push({
-        cookieStoreId,
-        host: c.host,
-        alternative: alternativeFor(relays, r || { host: c.host, city: c.city, cc: c.cc })
-      })
+      const alternative = alternativeFor(relays, r || { host: c.host, city: c.city, cc: c.cc }, taken)
+      if (alternative) taken.add(alternative.host)
+      out.push({ cookieStoreId, host: c.host, alternative })
     }
     return out
   }
@@ -301,6 +323,7 @@
     groupByLocation,
     findRelay,
     alternativeFor,
+    assignedElsewhere,
     offlineAssigned,
     mergeAssignments,
     isTunnelAddress,

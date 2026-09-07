@@ -116,7 +116,10 @@ than the one configured blocks the container as `misrouted`.
 ## What you get
 
 - A per-container popup: current exit, live health, the verified exit IP, and
-  a quick server switcher with search, favourites and recents.
+  a quick server switcher with search, favourites and recents. Servers another
+  container already uses are marked, and picking one asks first — two
+  containers on one exit come out at the same address, which is what separate
+  exits are for.
 - A killswitch that fails closed — on startup, before settings load, on
   probe timeouts, on wrong-exit answers, and on anything it cannot attribute
   (strict mode).
@@ -146,7 +149,8 @@ than the one configured blocks the container as `misrouted`.
 - Offline awareness: the relay list refreshes daily and again when one of
   your relays stops answering, servers out of service disappear from the
   picker, and if one of *your* assigned exits goes offline you get told, with
-  a one-click move to the same city.
+  a one-click move to a server in the same city, or the same country, that
+  nothing else uses.
 - A blocked page that names the container, the exit and the reason, instead
   of a blank network error.
 - Continuous DoH detection, because a setting you were asked to change once

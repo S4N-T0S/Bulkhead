@@ -1169,6 +1169,7 @@ async function getState () {
     },
     privateAllowed,
     renamed: { ...renamed },
+    names: Object.fromEntries(names),
     prefsAck: s.prefsAck === true,
     recents: Array.isArray(s.recents) ? s.recents : [],
     favorites: Array.isArray(s.favorites) ? s.favorites : [],

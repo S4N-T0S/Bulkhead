@@ -117,7 +117,8 @@ declare var relaylib: {
   searchRelays(relays: Relay[], q: string, f?: { ownedOnly?: boolean }): Relay[]
   groupByLocation(relays: Relay[]): { cc: string, country: string, cities: { city: string, relays: Relay[] }[] }[]
   findRelay(relays: Relay[], host: string): Relay | undefined
-  alternativeFor(relays: Relay[], gone: { host: string, city: string, cc: string }): Relay | undefined
+  alternativeFor(relays: Relay[], gone: { host: string, city: string, cc: string }, taken?: Set<string>): Relay | undefined
+  assignedElsewhere(containers: Record<string, ContainerConfig>, except?: string): Map<string, string[]>
   offlineAssigned(containers: Record<string, ContainerConfig>, relays: Relay[]): OfflineAssignment[]
   mergeAssignments(prev: Record<string, ContainerConfig>, next: Record<string, ContainerConfig>): { containers: Record<string, ContainerConfig>, stale: string[] }
   isTunnelAddress(ip: string): boolean
@@ -136,6 +137,8 @@ declare var fmt: {
   flagSrc(cc: string): string
   relayTags(r: Relay): string[]
   exitName(c: ContainerConfig): string
+  nameList(names: string[]): string
+  usedBy(assigned: Map<string, string[]>, names: Record<string, string>): Record<string, string[]>
 }
 
 // ui/picker.js
@@ -145,6 +148,8 @@ interface PickerOptions {
   recents: string[]
   favorites: string[]
   currentHost: string
+  /** host -> names of the other contexts already using it */
+  assigned?: Record<string, string[]>
   onPick(host: string): void
   onFavorite(host: string, on: boolean): void
 }
@@ -162,6 +167,8 @@ interface StateSnapshot {
   blockLog: BlockEntry[]
   relays: { ts: number, source: string, count: number, offline: OfflineAssignment[] }
   renamed: Record<string, string>
+  /** Context names as the badge titles them; filled a beat after hydrate */
+  names: Record<string, string>
   privateAllowed: boolean
   prefsAck: boolean
   recents: string[]

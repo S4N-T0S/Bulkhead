@@ -1,5 +1,5 @@
 'use strict'
-/* global fmt, createPicker */
+/* global relaylib, fmt, createPicker */
 
 ;(() => {
   /** @param {string} id @returns {HTMLElement} */
@@ -169,6 +169,9 @@
 
       const row = document.createElement('div')
       row.className = 'row'
+      const pick = document.createElement('button')
+      pick.textContent = 'Choose another…'
+      pick.addEventListener('click', () => openPicker(o.cookieStoreId))
       if (o.alternative) {
         const move = document.createElement('button')
         move.textContent = `Move to ${o.alternative.host} (${o.alternative.city})`
@@ -177,13 +180,22 @@
           await browser.runtime.sendMessage({ cmd: 'assign', cookieStoreId: o.cookieStoreId, host: o.alternative?.host })
           await refresh()
         })
-        row.append(move)
+        const free = document.createElement('span')
+        free.className = 'sub'
+        free.id = `free-${o.cookieStoreId}`
+        free.textContent = 'nothing else uses it'
+        move.setAttribute('aria-describedby', free.id)
+        const pair = document.createElement('span')
+        pair.className = 'row'
+        pair.append(move, free)
+        pick.className = 'quiet'
+        row.append(pair, pick)
+      } else {
+        // the suggestion never shares an exit, so there may be none; the
+        // picker is then the only way out
+        p.append(document.createTextNode(' No free server nearby to move it to.'))
+        row.append(pick)
       }
-      const pick = document.createElement('button')
-      pick.className = 'quiet'
-      pick.textContent = 'Choose another…'
-      pick.addEventListener('click', () => openPicker(o.cookieStoreId))
-      row.append(pick)
       banner.append(row)
       box.append(banner)
     }
@@ -386,6 +398,7 @@
       recents: snapshot.recents,
       favorites: snapshot.favorites,
       currentHost: current ? current.host : '',
+      assigned: fmt.usedBy(relaylib.assignedElsewhere(snapshot.containers, cookieStoreId), snapshot.names),
       onFavorite: (host, on) => {
         browser.runtime.sendMessage({ cmd: 'favorite', host, on })
       },

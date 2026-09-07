@@ -318,18 +318,52 @@ tr:last-child td { border-bottom: none; }
   text-align: left;
   font-family: var(--mono);
   font-size: 12px;
+  overflow: hidden;
 }
 .picker-row[aria-current="true"] { color: var(--accent); font-weight: 600; }
 .picker-row[aria-current="true"]::before { content: "✓"; }
 .picker-row .tag { font-family: var(--font); }
+/* a server's own notice outranks who else uses it: the note keeps a floor
+   and "used by" yields, since picking the row asks anyway */
 .picker-row .note {
   font-family: var(--font);
   color: var(--warn);
   font-size: 11px;
+  min-width: 6em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* who else already comes out here: words, so it survives forced-colors
+   and a screen reader */
+.picker-row .inuse {
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--warn);
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* the row whose question is open, joined to the block under it by a border
+   rather than a shadow, which forced-colors would drop */
+.picker-row[aria-expanded="true"] {
+  border-left: 3px solid var(--warn);
+  padding-left: 7px;
+}
+.picker-rowwrap.open { background: var(--warn-bg); }
+.picker-confirm {
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 7px 10px 9px 7px;
+  background: var(--warn-bg);
+  border-left: 3px solid var(--warn);
+  border-bottom: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+}
+.picker-confirm p { margin: 0 0 7px; }
+.picker-confirm .row { flex-wrap: wrap; gap: 6px; }
+.picker-confirm button { font-size: 12px; padding: 3px 10px; }
 .picker-tunnel {
   font-family: var(--font);
   width: 100%;

@@ -104,6 +104,7 @@ summary { cursor: pointer; }
 #offline-banner:empty { display: none; }
 #offline-banner { display: flex; flex-direction: column; gap: 10px; }
 #offline-banner .row { margin-top: 6px; flex-wrap: wrap; }
+#offline-banner .row .row { margin-top: 0; gap: 6px; }
 
 dialog {
   width: min(440px, 90vw);

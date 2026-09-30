@@ -30,10 +30,13 @@
     <dt>Requested</dt><dd id="url" class="mono">—</dd>
   </dl>
 
-  <div class="row">
-    <button id="retry" class="primary">Re-check and retry</button>
-    <button id="options">Settings</button>
-    <span id="status" class="sub"></span>
+  <div class="actions">
+    <div class="row">
+      <button id="retry" class="primary">Re-check and retry</button>
+      <button id="options">Settings</button>
+      <span id="status" class="sub" aria-live="polite"></span>
+    </div>
+    <p id="hint" class="sub" aria-live="polite"></p>
   </div>
 
   <p class="sub footer">Bulkhead</p>

@@ -100,6 +100,17 @@ Read this part.
 - **Requests before the background page is running.** Anything Firefox issues
   during early startup is seen by neither listener. `persistent: true` is the
   mitigation the platform offers and it is set.
+- **A Firefox started outside the tunnel.** Mullvad's split tunnelling
+  excludes an app and the processes it starts. Click a link in an excluded
+  app — Steam, say — while Firefox is closed, and the Firefox it opens can be
+  excluded too. No in-tunnel exit can be reached from there, so every context
+  on a Mullvad exit blocks as "Server not answering" for as long as that
+  Firefox stays open, with the Mullvad app connected the whole time. That is
+  the killswitch doing its job. What it cannot speak for is the rest:
+  contexts you left unmanaged are on your real connection, a custom exit is
+  reached over it, and so was anything issued before Bulkhead was running.
+  Close Firefox completely and start it yourself. With Firefox already
+  running the link is handed to it, and none of this applies.
 - **The extension being disabled, crashed or uninstalled.** Nothing protects
   you then.
 

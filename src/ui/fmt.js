@@ -132,6 +132,72 @@
     return c.host
   }
 
+  // Every Mullvad exit down at once: the tunnel, or a Firefox outside it,
+  // rather than one server. A single managed exit is trivially all of them,
+  // which is why tunnelHint also waits for a repeat failure.
+  /** @param {Record<string, { custom?: boolean, health?: string }>} containers @param {string} id @returns {boolean} */
+  function tunnelSuspect (containers, id) {
+    const c = Object.hasOwn(containers, id) ? containers[id] : undefined
+    if (!c || c.custom) return false
+    return Object.values(containers).every(o => !o || o.custom || o.health === 'down')
+  }
+
+  // a hard error from a request already in flight restamps the verdict
+  // within seconds; a failure this long after the first is a check of its own
+  const HINT_AFTER_MS = 20000
+
+  // Whether the blocked page should suggest Firefox itself is outside the
+  // tunnel. One failed check is a reconnect or a dead server, so it takes a
+  // second one -- the page's own Re-check, or a later scheduled check -- and
+  // nothing else to blame.
+  /**
+   * @param {{ containers: Record<string, { custom?: boolean, health?: string, healthAt?: number }>, relays: { offline: { cookieStoreId: string }[] } }} st
+   * @param {string} id
+   * @param {number | undefined} downAt healthAt when the page first saw this exit down
+   * @param {boolean} rechecked the page's own Re-check has failed since
+   * @returns {boolean}
+   */
+  function tunnelHint (st, id, downAt, rechecked) {
+    const c = Object.hasOwn(st.containers, id) ? st.containers[id] : undefined
+    if (!c || c.health !== 'down' || downAt === undefined) return false
+    if (!rechecked && !((c.healthAt || 0) - downAt >= HINT_AFTER_MS)) return false
+    // a relay taken out of service already explains itself
+    if (st.relays.offline.some(o => o.cookieStoreId === id)) return false
+    return tunnelSuspect(st.containers, id)
+  }
+
+  // What a blocked page does with a fresh snapshot. A page opened while the
+  // gate was only waiting -- on its settings, or on a check -- follows the
+  // exit and continues the navigation by itself; one opened on a failure
+  // only ever reports the recovery.
+  /**
+   * @param {string} reason what the gate opened the page with
+   * @param {{ ready: boolean, containers: Record<string, { health?: string }> }} st
+   * @param {string} id
+   * @param {boolean} wasManaged the page has already seen a server set here
+   * @returns {{ next: 'wait' | 'go' | 'back' | 'stop', show: string }} show
+   *   is the reason to display instead, or '' to leave the page as it is
+   */
+  function blockedNext (reason, st, id, wasManaged) {
+    // an assignment list that has not been read yet says nothing
+    if (!st.ready) return { next: 'wait', show: '' }
+    const c = Object.hasOwn(st.containers, id) ? st.containers[id] : undefined
+    if (!c) {
+      // Stopped at startup with no server set: nothing is left to wait for.
+      // Unassigned since is different -- no exit is coming back, and
+      // loading the page bare is not the page's call.
+      return { next: reason === 'not-ready' && !wasManaged ? 'go' : 'stop', show: '' }
+    }
+    const waiting = reason === 'not-ready' || reason === 'proxy-unverified'
+    if (c.health === 'up') return { next: waiting ? 'go' : 'back', show: '' }
+    if (!waiting) return { next: 'wait', show: '' }
+    // the same reading of health the gate makes
+    return {
+      next: 'wait',
+      show: c.health === 'unknown' ? 'proxy-unverified' : c.health === 'misrouted' ? 'misrouted' : 'proxy-down'
+    }
+  }
+
   /** @param {string} cc @returns {string} */
   function flagSrc (cc) {
     return /^[a-z]{2}$/.test(cc) ? `/flags/${cc}.svg` : ''
@@ -160,7 +226,7 @@
     return Object.fromEntries([...assigned].map(([host, ids]) => [host, ids.map(id => names[id] || 'another container')]))
   }
 
-  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, flagSrc, relayTags, exitName, nameList, usedBy }
+  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, flagSrc, relayTags, exitName, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

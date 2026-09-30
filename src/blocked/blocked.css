@@ -31,4 +31,7 @@ dl {
 dt { color: var(--muted); }
 dd { margin: 0; word-break: break-all; }
 
+#hint { margin: 0; }
+#hint:not(:empty) { margin-top: 14px; }
+
 .footer { margin-top: 18px; }

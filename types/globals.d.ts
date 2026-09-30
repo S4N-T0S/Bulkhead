@@ -140,6 +140,9 @@ declare var fmt: {
   flagSrc(cc: string): string
   relayTags(r: Relay): string[]
   exitName(c: ContainerConfig): string
+  tunnelSuspect(containers: Record<string, { custom?: boolean, health?: string }>, id: string): boolean
+  tunnelHint(st: { containers: Record<string, { custom?: boolean, health?: string, healthAt?: number }>, relays: { offline: { cookieStoreId: string }[] } }, id: string, downAt: number | undefined, rechecked: boolean): boolean
+  blockedNext(reason: string, st: { ready: boolean, containers: Record<string, { health?: string }> }, id: string, wasManaged: boolean): { next: 'wait' | 'go' | 'back' | 'stop', show: string }
   nameList(names: string[]): string
   usedBy(assigned: Map<string, string[]>, names: Record<string, string>): Record<string, string[]>
 }

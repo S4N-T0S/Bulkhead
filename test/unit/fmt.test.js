@@ -2,8 +2,9 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  timeAgo, healthLabel, healthClass, explainDetail, rawDetail, flagSrc, relayTags, nameList, usedBy
+  timeAgo, healthLabel, healthClass, explainDetail, rawDetail, flagSrc, relayTags, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy
 } = require('../../src/ui/fmt.js')
+const { decide } = require('../../src/decide.js')
 
 test('timeAgo covers every bucket and its boundaries', () => {
   const now = 1_000_000_000_000
@@ -106,6 +107,130 @@ test('relayTags marks ownership and only out-of-the-ordinary speed', () => {
   assert.deepEqual(relayTags({ ...base, owned: true }), ['owned'])
   assert.deepEqual(relayTags({ ...base, speed: 40 }), [])
   assert.deepEqual(relayTags({ owned: true, speed: 100 }), ['owned', '100G'])
+})
+
+test('tunnelSuspect needs every Mullvad exit down, and a Mullvad exit to ask about', () => {
+  const down = { health: 'down' }
+  assert.equal(tunnelSuspect({ a: down }, 'a'), true)
+  assert.equal(tunnelSuspect({ a: down, b: down }, 'a'), true)
+  // one exit answering proves Firefox is inside the tunnel; unknown and
+  // misrouted prove nothing either way
+  assert.equal(tunnelSuspect({ a: down, b: { health: 'up' } }, 'a'), false)
+  assert.equal(tunnelSuspect({ a: down, b: { health: 'unknown' } }, 'a'), false)
+  assert.equal(tunnelSuspect({ a: down, b: { health: 'misrouted' } }, 'a'), false)
+  assert.equal(tunnelSuspect({ a: { health: 'unknown' } }, 'a'), false)
+  // custom exits are not in the tunnel and say nothing about it
+  assert.equal(tunnelSuspect({ a: down, b: { custom: true, health: 'up' } }, 'a'), true)
+  assert.equal(tunnelSuspect({ a: { custom: true, health: 'down' }, b: down }, 'a'), false)
+  assert.equal(tunnelSuspect({ a: down }, 'gone'), false)
+  assert.equal(tunnelSuspect({}, ''), false)
+  // inherited keys are not assignments, and a null entry is not a config
+  assert.equal(tunnelSuspect({}, '__proto__'), false)
+  assert.equal(tunnelSuspect({}, 'constructor'), false)
+  assert.equal(tunnelSuspect(/** @type {any} */ ({ a: down, b: null }), 'a'), true)
+})
+
+test('tunnelHint waits for the exit to fail again before blaming the tunnel', () => {
+  const at = 1_000_000
+  /** @param {number} healthAt @param {Record<string, object>} [others] @param {string[]} [offline] */
+  const st = (healthAt, others = {}, offline = []) => ({
+    containers: { a: { health: 'down', healthAt }, ...others },
+    relays: { offline: offline.map(cookieStoreId => ({ cookieStoreId })) }
+  })
+
+  assert.equal(tunnelHint(st(at), 'a', at, false), false)
+  // a verdict restamped seconds later by a request already in flight is the
+  // same outage, not a second check; a Re-check by the page counts at once
+  assert.equal(tunnelHint(st(at + 5_000), 'a', at, false), false)
+  assert.equal(tunnelHint(st(at + 19_999), 'a', at, false), false)
+  assert.equal(tunnelHint(st(at + 20_000), 'a', at, false), true)
+  assert.equal(tunnelHint(st(at), 'a', at, true), true)
+  // an older snapshot arriving late
+  assert.equal(tunnelHint(st(at - 60_000), 'a', at, false), false)
+  assert.equal(tunnelHint(st(at + 60_000), 'a', undefined, true), false)
+
+  // anything that already explains the failure
+  assert.equal(tunnelHint(st(at, { b: { health: 'up' } }), 'a', at, true), false)
+  assert.equal(tunnelHint(st(at, {}, ['a']), 'a', at, true), false)
+  assert.equal(tunnelHint(st(at, {}, ['b']), 'a', at, true), true)
+  assert.equal(tunnelHint({ containers: { a: { health: 'misrouted', healthAt: at } }, relays: { offline: [] } }, 'a', at, true), false)
+  assert.equal(tunnelHint({ containers: { a: { custom: true, health: 'down', healthAt: at } }, relays: { offline: [] } }, 'a', at, true), false)
+  assert.equal(tunnelHint(st(at), '__proto__', at, true), false)
+})
+
+const REASONS = ['not-ready', 'proxy-unverified', 'proxy-down', 'misrouted', 'no-proxy', 'error', 'unattributed', 'speculative', 'unknown', '']
+const WAITING = ['not-ready', 'proxy-unverified']
+
+test('blockedNext continues a page that was only waiting, and nothing else', () => {
+  /** @param {string} [health] @param {boolean} [ready] */
+  const st = (health, ready = true) => ({ ready, containers: health ? { a: { health } } : {} })
+  /** @param {string} reason @param {ReturnType<typeof st>} s @param {boolean} [managed] */
+  const next = (reason, s, managed = false) => blockedNext(reason, s, 'a', managed)
+
+  // before the settings are read a list means nothing, whatever it holds
+  for (const reason of REASONS) {
+    for (const health of [undefined, 'up', 'down']) {
+      assert.deepEqual(next(reason, st(health, false)), { next: 'wait', show: '' }, `${reason}/${health}`)
+    }
+  }
+
+  // stopped at startup with no server set: nothing left to wait for
+  assert.deepEqual(next('not-ready', st()), { next: 'go', show: '' })
+  // unassigned while the page sat open is not the same thing, and the page
+  // must not be put back to a promise to load
+  assert.deepEqual(next('not-ready', st(), true), { next: 'stop', show: '' })
+  for (const reason of REASONS.filter(r => r !== 'not-ready')) {
+    for (const managed of [true, false]) {
+      assert.deepEqual(next(reason, st(), managed), { next: 'stop', show: '' }, `${reason}/${managed}`)
+    }
+  }
+
+  for (const waiting of WAITING) {
+    assert.deepEqual(next(waiting, st('up')), { next: 'go', show: '' }, waiting)
+    assert.deepEqual(next(waiting, st('unknown')), { next: 'wait', show: 'proxy-unverified' }, waiting)
+    // a failed check is shown for what it is, and the page keeps waiting
+    assert.deepEqual(next(waiting, st('down')), { next: 'wait', show: 'proxy-down' }, waiting)
+    assert.deepEqual(next(waiting, st('misrouted')), { next: 'wait', show: 'misrouted' }, waiting)
+  }
+
+  // opened on a failure: report the recovery, leave the loading to a click
+  for (const failed of REASONS.filter(r => !WAITING.includes(r))) {
+    assert.deepEqual(next(failed, st('up')), { next: 'back', show: '' }, failed)
+    for (const h of ['down', 'misrouted', 'unknown']) {
+      assert.deepEqual(next(failed, st(h)), { next: 'wait', show: '' }, `${failed}/${h}`)
+    }
+  }
+
+  // inherited keys are not containers
+  assert.equal(blockedNext('proxy-down', st('up'), '__proto__', false).next, 'stop')
+  assert.equal(blockedNext('proxy-unverified', st('up'), 'constructor', false).next, 'stop')
+})
+
+test('blockedNext never continues while a managed exit is not up', () => {
+  for (const reason of REASONS) {
+    for (const health of ['down', 'misrouted', 'unknown', undefined, 'nonsense']) {
+      for (const ready of [true, false]) {
+        for (const managed of [true, false]) {
+          const out = blockedNext(reason, { ready, containers: { a: { health } } }, 'a', managed)
+          assert.equal(out.next, 'wait', `${reason}/${health}/${ready}/${managed}`)
+        }
+      }
+    }
+  }
+})
+
+test('blockedNext shows a waiting page the reason the gate would give', () => {
+  for (const health of ['down', 'misrouted', 'unknown', 'nonsense', undefined]) {
+    const containers = { a: { ip: '10.124.0.1', port: 1080, health } }
+    const gate = decide(
+      /** @type {any} */ ({ ready: true, strict: true, containers, probeTokens: new Set() }),
+      { url: 'https://example.com/', cookieStoreId: 'a', type: 'main_frame' }
+    )
+    assert.equal(gate.verdict, 'block', String(health))
+    for (const waiting of WAITING) {
+      assert.equal(blockedNext(waiting, { ready: true, containers }, 'a', false).show, gate.reason, `${waiting}/${health}`)
+    }
+  }
 })
 
 test('nameList reads as English for one, two and more names', () => {

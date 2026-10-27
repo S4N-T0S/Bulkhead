@@ -1,22 +1,24 @@
 version: 2
 updates:
-  # this is what keeps the pinned action SHAs from going stale
+  # security updates only: limit 0 turns version updates off, so refresh the
+  # pinned action SHAs by hand now and then
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 0
     groups:
       actions:
+        applies-to: security-updates
         patterns: ['*']
 
-  # build-time only, and the tree is large enough that ungrouped PRs would be
-  # pure noise
+  # build-time only; most advisories land deep in web-ext's tree
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: monthly
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 0
     groups:
-      dev-dependencies:
-        dependency-type: development
+      npm-security:
+        applies-to: security-updates
         patterns: ['*']

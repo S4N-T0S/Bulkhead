@@ -284,13 +284,19 @@
       if (p && p.ip === n.ip && p.port === n.port && p.socksHost === n.socksHost
         && p.host === n.host && p.custom === n.custom
         && p.username === n.username && p.password === n.password) {
-        containers[id] = {
+        const merged = {
           ...n,
           health: p.health,
           healthDetail: p.healthDetail,
           healthAt: p.healthAt,
           exitIp: p.exitIp
         }
+        // [bhtz] probe geography follows the verdict it arrived with; kept
+        // only where the config (and therefore the verdict) is unchanged.
+        // Conditional so the merged shape stays exactly as before when no
+        // probe has answered yet.
+        if (p.lastGeo) merged.lastGeo = p.lastGeo
+        containers[id] = merged
       } else {
         containers[id] = { ...n, health: 'unknown' }
         stale.push(id)

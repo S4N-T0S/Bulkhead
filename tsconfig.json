@@ -11,5 +11,11 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "types"]
+  "include": ["src", "types"],
+  // tz-realm.js is the field-verified realm engine ported verbatim from the
+  // Timezone Lock userscript (MIT). Annotating it would grow the diff from
+  // upstream and risk semantic drift in the one file that must stay exactly
+  // what was proven against CreepJS; it is covered end-to-end by
+  // test/unit/tz-realm.test.js instead.
+  "exclude": ["src/tz-realm.js"]
 }

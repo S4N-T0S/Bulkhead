@@ -69,3 +69,38 @@ footer {
   white-space: normal;
 }
 .setup-strip:hover { background: var(--warn-bg); }
+
+/* ---- [bhtz] timezone matching ---- */
+.tz-card .tz-glyph { font-size: 13px; opacity: 0.75; margin-right: 2px; }
+.tz-card .place { font-size: 13px; }
+.tz-card .banner { margin-top: 2px; }
+
+.tz-specials { display: flex; flex-direction: column; gap: 4px; }
+.tz-search { width: 100%; margin-top: 8px; }
+.tz-list {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 6px;
+}
+.tz-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border-radius: var(--radius-s);
+}
+.tz-entry.current {
+  outline: 1px solid var(--accent-fill);
+  font-weight: 600;
+}
+
+.tz-verify { display: flex; flex-direction: column; gap: 2px; }
+.tz-vrow { font-size: 12px; padding: 3px 2px; border-bottom: 1px solid var(--line); }
+.tz-vrow .good { color: var(--good, #1a7f37); font-weight: 700; }
+.tz-vrow .bad { color: var(--bad, #c50042); font-weight: 700; }

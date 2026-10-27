@@ -1,8 +1,8 @@
 {
-  "name": "bulkhead",
-  "version": "1.0.5",
-  "description": "Firefox extension pinning each container to its own Mullvad SOCKS5 exit, with a fail-closed killswitch. Unofficial; not affiliated with Mullvad AB.",
-  "author": "S4N-T0S (https://github.com/S4N-T0S)",
+  "name": "bulkhead-tz",
+  "version": "1.1.0",
+  "description": "Firefox extension: Bulkhead's fail-closed per-container Mullvad SOCKS5 exits plus per-container timezone matching that defeats derived-timezone fingerprinting. Based on Bulkhead by S4N-T0S (GPL-3.0). Unofficial; not affiliated with Mullvad AB.",
+  "author": "S4N-T0S (Bulkhead, https://github.com/S4N-T0S); Bulkhead TZ contributors",
   "license": "GPL-3.0-only",
   "private": true,
   "repository": {
@@ -22,7 +22,8 @@
     "test": "node --test \"test/unit/**/*.test.js\"",
     "test:coverage": "node --test --experimental-test-coverage --test-coverage-include=\"src/**\" \"test/unit/**/*.test.js\"",
     "test:e2e": "node test/e2e/run.mjs",
-    "build": "web-ext build"
+    "build": "web-ext build",
+    "audit:cities": "node tools/audit-cities.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",

@@ -1,5 +1,15 @@
 # Reporting a vulnerability
 
+> **This is Bulkhead TZ, a fork of [Bulkhead](https://github.com/S4N-T0S/Bulkhead).**
+> Anything in the upstream code (the killswitch, the probe, the gate — everything
+> not marked `[bhtz]`) is best reported to the upstream repository, where the
+> policy below was written and where it can also protect Bulkhead's users.
+> Anything in the timezone additions (`zones.js`, `tz.js`, `tz-realm.js`, the
+> `[bhtz]` hooks) belongs to this fork's maintainers. For this fork, one more
+> class matters: a page in a managed context observing the **machine's real
+> timezone** after its container's zone was derived and registered — or a
+> registered zone that contradicts the context's verified exit.
+
 Use GitHub's private vulnerability reporting on this repository
 (Security → Report a vulnerability). Please don't open a public issue for
 something that would put users at risk before there's a fix.

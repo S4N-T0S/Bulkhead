@@ -1,364 +1,229 @@
-# Bulkhead
+# Bulkhead TZ
 
-Fail-closed SOCKS5 proxies for Firefox containers. Each container — and the
-default context and private windows, if you want — gets its own exit, and
-**traffic is blocked whenever that exit is not confirmed working**, instead
-of failing in whatever way the network happens to fail.
+Fail-closed SOCKS5 proxies for Firefox containers — **plus per-container
+timezone matching**. Every container gets its own Mullvad exit, traffic is
+blocked whenever that exit is not confirmed working, *and* the pages inside
+each container present the IANA timezone of the exit they are proven to use —
+consistently enough to defeat derived-timezone fingerprinting
+([CreepJS's timezone test](https://abrahamjuliot.github.io/creepjs/tests/timezone.html)
+included).
 
-Like the watertight compartments it is named after: when one floods, its
-doors seal shut and the ship stays afloat.
+This is a fork of [**Bulkhead**](https://github.com/S4N-T0S/Bulkhead) 1.0.5
+by S4N-T0S (GPL-3.0). The killswitch, the probe, the gate, the relay logic,
+the blocked page and the picker are upstream code, unmodified; every
+addition is marked `[bhtz]` in the source and confined to three new modules
+plus narrow hooks. See [Attribution](#attribution-and-license).
 
 Works with Mullvad's SOCKS5 relays. Requires your own Mullvad account and an
-active tunnel — the relays only exist inside it. Unofficial; not affiliated
-with Mullvad AB.
+active tunnel. Unofficial; not affiliated with Mullvad AB.
 
-![the popup, one container pinned to Gothenburg](assets/popup-light.png)
+Target: **Firefox 142+ (developed against Nightly 160, macOS)**, Manifest V2.
 
-## Why this exists
+---
 
-`proxy.onRequest` can only answer *which proxy*, never *no*. An extension
-that assigns a proxy has no say in what happens when that proxy stops
-answering — and for Mullvad it stops answering constantly, not occasionally:
-every reconnect, server switch or laptop wake makes the in-tunnel relays
-briefly unreachable. Bulkhead adds a second listener,
-`webRequest.onBeforeRequest`, which *can* cancel, so while a container's exit
-is not confirmed up its requests are killed outright and it says so.
+## Why an extension beats a userscript here
 
-The three failures that actually matter, none of which the proxy API can
-address on its own:
+The timezone half of this project started life as a userscript
+(`Timezone Lock` v3.3.4, MIT). Its changelog is a catalogue of things a
+userscript cannot control, every one of which disappears inside Bulkhead:
 
-- **The exit is silently the wrong one.** A proxy that answers is not a proxy
-  that answers from where you configured. Bulkhead verifies the exit
-  hostname, not just liveness, and blocks the container when they disagree.
-- **Failure looks like an ordinary broken page.** Without a gate you get a
-  network error and no idea whether anything escaped. Bulkhead cancels
-  deliberately and tells you which container, which exit and why.
-- **A configured proxy that Firefox cannot use.** An unroutable
-  `ProxyInfo` — a bad port, a config half-written — takes Gecko's
-  invalid-proxy path, which *is* a direct connection. One shared validity
-  check governs both listeners so that state can't arise.
+| Userscript problem | Bulkhead TZ answer |
+| --- | --- |
+| **Late injection.** The manager delivered the script after page scripts ran; the page captured un-patched `Date` and rendered the real zone even though the realm later measured clean. Cost: corrective reloads, inject-mode tuning. | The background page registers the script with `browser.contentScripts.register({ runAt: 'document_start', world: 'MAIN' })`. The platform injects it before the document parses. There is no manager pipeline left to lose a race with. |
+| **Cold start.** No synchronous way to learn the exit zone: veil the page, sprint a Cloudflare-trace ladder, reload once. | The killswitch already blocks every request until a probe through the container's own relay verifies the exit. That probe's answer (`am.i.mullvad.net/json`) names the exit's country and city. The zone is known, verified and registered **before the first page load is allowed** — no veil, no reload, no extra request. |
+| **Wrong-container lookups.** `GM_xmlhttpRequest` leaves from the manager's context, so under per-container proxies it measures the *default* tunnel (the v2.0.0 Norway-from-Greece bug). | There is no lookup. The probe rides the container's SOCKS relay by token routing and is only believed after the exit hostname checks out — the same evidence the killswitch stakes its verdicts on. |
+| **Page CSP blocks inline injection.** | MAIN-world content scripts are exempt from page CSP and iframe sandbox (Firefox 128+). |
+| **Geo-IP providers, blocklists, firewalls.** An entire ladder of endpoints audited against EasyPrivacy/Disconnect/1Host. | Zero page-side requests. The geography is mapped offline from tzdb's own tables. |
+| **Per-container cache in `localStorage`, wiped by "clear cookies".** | Zone state lives in the background page's memory, rebuilt from assignments and probes on every start. Nothing for a site or a cleanup to corrupt. |
 
-### About the "silent fallback to DIRECT"
+## What timezone matching does
 
-This project started from the widely repeated claim that a dead proxy makes
-Firefox fall back to an unproxied connection
-([bug 1528873](https://bugzilla.mozilla.org/show_bug.cgi?id=1528873), closed
-WONTFIX). Having read the source rather than the bug thread, that is not what
-current Firefox does for extension-supplied proxies, and the honest version
-is worth writing down.
+For every context (container, default, private) that has an exit assigned:
 
-`network.proxy.failover_direct` is read in exactly one place,
-`nsHttpChannel::ProxyFailover()`, and the DIRECT fallback behind it is gated
-three deep: the `MOZ_PROXY_DIRECT_FAILOVER` build flag, the pref itself, and
-`LoadBeConservative()`. That last one is the decisive gate — the build
-option's own help text describes it as failover "for system requests", and
-`beConservative` is set on Firefox's internal networking, not on page loads.
-`GetFailoverForProxy` returns `pi->mNext`, the chain the extension itself
-supplied; nothing appends DIRECT to it.
+1. **Derive.** The verified probe's country/city → IANA zone, offline
+   (`src/zones.js`): single-zone countries resolve on the country alone;
+   multi-zone countries on the city, accepted only if tzdb lists that zone
+   inside that country; otherwise the country's primary zone, flagged
+   *country-level* in the UI. A user **pin** outranks everything; **off**
+   never spoofs; unassigned contexts are **never spoofed** — a zone your
+   real IP contradicts is a louder signal than an honest one.
+2. **Deliver.** One MAIN-world `document_start` registration per context
+   (`cookieStoreId`-filtered), the zone baked into the registered code
+   (`src/tz.js`).
+3. **Patch.** The realm engine (`src/tz-realm.js`, ported from Timezone
+   Lock) rebuilds `Date`, `Intl.DateTimeFormat` defaults and `Temporal.Now`
+   around the target zone in the page realm — and keeps every observable
+   mutually consistent:
+   - non-ISO string parsing (`new Date('7/1/1113')`, `'M/D/YYYY'`) is
+     re-interpreted in the target zone — this is what CreepJS's
+     `offsetComputed` and year-1113 "computed location" actually measure;
+   - local getters/setters, `toString/toDateString/toTimeString` (incl. the
+     CLDR zone name and truncated GMT label), `toLocaleString*` (delegated
+     to the natives with the zone injected, because SpiderMonkey resolves
+     the `%Intl%` intrinsic directly), Annex B `getYear/setYear`;
+   - explicit `timeZone` options are still honoured — the
+     `Intl.DateTimeFormat` constructor only supplies a *default*, so nothing
+     is a blanket lie;
+   - about:blank/srcdoc probe realms (captured at DOM-insertion time, since
+     indexed `WindowProxy` access is not a hookable getter — this is the
+     realm CreepJS inspects patched prototypes *from*),
+     `window.open` targets, workers (constructors shimmed onto blob payloads
+     that re-run the same engine);
+   - `Function.prototype.toString` vouches narrowly — only for functions the
+     engine created — and patched members satisfy CreepJS's `searchLies`
+     invariants exactly (own props `['length','name']`, no own `prototype`,
+     strict-mode `TypeError` on `.caller`/`.arguments`).
 
-So for ordinary traffic in a container, a dead exit means the request fails.
-Four measured configurations agree — black-holed and connection-refused
-proxies, each with the pref both ways, zero escapes
-(`test/e2e/transition.mjs`).
+### Why the CreepJS timezone panel comes out consistent
 
-One related case is real: if you have a **system or PAC proxy** configured,
-that proxy is the tail of the chain, so a failed container exit falls through
-to it. Not direct, but not your container's exit either. The exit check
-catches it as `misrouted`.
+CreepJS derives, rather than reads, and compares derivations:
 
-Setting `network.proxy.failover_direct = false` is still worth doing as
-defence in depth — build flags and gating change between versions, and this
-is one line in `about:config` — but Bulkhead does not depend on it, and
-anything claiming that pref is what stands between you and a leak is
-repeating the folklore rather than the code.
+- `offset` vs `offsetComputed` — a local-string parse against
+  `getTimezoneOffset()`. Both come from the patched engine: equal.
+- `location` vs `locationMeasured` — `resolvedOptions().timeZone` against a
+  **year-1113 LMT** probe (`+new Date('7/1/1113')` vs Intl-formatted
+  round-trip, binary-searched over ~500 cities when they disagree). Because
+  the local parse *and* the Intl default are the same target zone, system and
+  resolved sides are equal, the search short-circuits to the reported zone,
+  and the LMT offsets come from ICU's own historical data — no LMT table is
+  baked in, so it cannot drift from the engine it is compared against.
+- `zone` — the parenthesised name in `Date#toString`, rendered from CLDR for
+  the target zone at the correct instant (DST-aware).
+- `lied` — `lieProps` from a hidden probe iframe's `Function.prototype.toString`.
+  The deep-stealth disguise covers the probe realm (see above).
 
-## What it does not protect against
+The popup's **Verify** button replays exactly these derivations against the
+live page (through the Xray view of the page realm) and reports each one.
 
-Read this part.
+## Install (Firefox Nightly, macOS)
 
-- **The window before a failure is noticed.** The request that *discovers* an
-  exit is dead was issued while everything still looked fine, and no
-  extension can close that. What it costs you is measured above: on current
-  Firefox that request fails rather than escaping. With a system or PAC proxy
-  configured it goes to that proxy instead, and the exit check catches it on
-  the next probe.
-- **DoH.** `network.trr.mode = 5`, manual. With DoH on, every container
-  resolves names through one provider over your main tunnel, re-correlating
-  exactly what the containers separate. Bulkhead cannot set this — but it
-  *can* see it: `dns.resolve()` reports whether an answer came from a trusted
-  recursive resolver, so DoH being switched back on is detected within ten
-  minutes and revokes the setup acknowledgement rather than leaving a stale
-  tick. The reverse is not provable, so a quiet result is reported as "no DoH
-  seen", never as verified off.
-- **Another extension doing its own lookups.** `dns.resolve()` is not a web
-  request: nothing in the proxy or webRequest pipeline sees it, so a lookup
-  another extension makes rides the system resolver instead of the
-  container's exit. The known case was uBlock Origin's CNAME uncloaking,
-  fixed upstream in 1.60.0 — current uBO skips its lookup for any request
-  proxied with `proxyDNS`, which Bulkhead always sets. On older uBO, untick
-  "Uncloak canonical names" in its settings, or update it.
-- **Requests before the background page is running.** Anything Firefox issues
-  during early startup is seen by neither listener. `persistent: true` is the
-  mitigation the platform offers and it is set.
-- **A Firefox started outside the tunnel.** Mullvad's split tunnelling
-  excludes an app and the processes it starts. Click a link in an excluded
-  app — Steam, say — while Firefox is closed, and the Firefox it opens can be
-  excluded too. No in-tunnel exit can be reached from there, so every context
-  on a Mullvad exit blocks as "Server not answering" for as long as that
-  Firefox stays open, with the Mullvad app connected the whole time. That is
-  the killswitch doing its job. What it cannot speak for is the rest:
-  contexts you left unmanaged are on your real connection, a custom exit is
-  reached over it, and so was anything issued before Bulkhead was running.
-  Close Firefox completely and start it yourself. With Firefox already
-  running the link is handed to it, and none of this applies.
-- **The extension being disabled, crashed or uninstalled.** Nothing protects
-  you then.
+Unsigned forks load as temporary add-ons — fine for a personal build, gone
+after browser restart, re-added in two clicks:
 
-There is deliberately no “test for leak” button. Three automated detectors
-were built and all three reported identically with `failover_direct` in both
-positions — including one aimed at the connection-refused path the earlier
-two missed. A check that can say “safe” while you leak is worse than no
-check, so none of them shipped.
+1. Build: `npm ci && npm run build` → `dist/bulkhead-tz-1.1.0.zip`, or use
+   the provided `bulkhead-tz.xpi` (it is the same zip of `src/`).
+2. Nightly → `about:debugging#/runtime/this-firefox` → **Load Temporary
+   Add-on…** → pick the `.xpi`/`.zip` (or `src/manifest.json`).
+3. Set the two `about:config` prefs the setup card asks for
+   (`network.proxy.failover_direct = false`, `network.trr.mode = 5`) — the
+   killswitch's own requirements, unchanged.
+4. Assign servers to your containers as in Bulkhead. Timezone matching is on
+   by default and needs no configuration: the first verified probe fixes each
+   container's zone.
 
-What *is* checked continuously is the exit itself: every managed container is
-probed against `am.i.mullvad.net`, and traffic emerging at any server other
-than the one configured blocks the container as `misrouted`.
+For a permanent install, either set `xpinstall.signatures.required = false`
+in Nightly and install the xpi, or run `web-ext run` from the repo
+(`npm start`).
 
-## What you get
+> If you also run the original Bulkhead, disable it while this fork is
+> installed — two extensions must not both own `proxy.onRequest`. The fork
+> uses its own extension id, so profiles/settings do not mix.
 
-- A per-container popup: current exit, live health, the verified exit IP, and
-  a quick server switcher with search, favourites and recents. Servers another
-  container already uses are marked, and picking one asks first — two
-  containers on one exit come out at the same address, which is what separate
-  exits are for.
-- A killswitch that fails closed — on startup, before settings load, on
-  probe timeouts, on wrong-exit answers, and on anything it cannot attribute
-  (strict mode).
-- **Every context is assignable, not just containers.** Tabs outside any
-  container, and private windows, can each be pinned to a specific relay or
-  to the **Mullvad tunnel exit** (`10.64.0.1`, the in-tunnel SOCKS endpoint
-  that follows whatever server the app is connected to and is unreachable the
-  moment the app is off). Pinning the default context also covers the
-  extension's own requests, so the daily server-list refresh rides the same
-  rules as everything else instead of leaving bare. Leave either on Direct
-  and it is simply unmanaged.
+## Using it
 
-  Private windows need one extra step: Firefox does not let an extension see
-  them until you allow it, in about:addons → Bulkhead → Details → Run in
-  Private Windows. Until then Bulkhead cannot gate them at all, and the
-  options page says so next to the row rather than pretending otherwise.
-- Custom exits: your own SOCKS5 servers — an SSH tunnel, a server you are
-  trying out — added in settings and assigned like any relay. Same
-  killswitch, same probing; the one thing no check can vouch for is where a
-  foreign exit comes out, and the settings page says so rather than
-  pretending.
-- **Allow loopback addresses**, an opt-in bypass for sign-in flows that hand
-  a token to an app listening on 127.0.0.1. Off by default; on, the gate passes loopback and
-  nothing else. Under default preferences Firefox does not proxy these
-  addresses in the first place (`network.proxy.allow_hijacking_localhost`),
-  so the toggle opens the killswitch for them, not a new route.
-- Offline awareness: the relay list refreshes daily and again when one of
-  your relays stops answering, servers out of service disappear from the
-  picker, and if one of *your* assigned exits is taken out of service, or
-  quietly drops off the list, you get told, and told whether it still
-  answers — the list and the server can disagree — with a one-click move to
-  a server in the same city, or the same country, that nothing else uses.
-- A blocked page that names the container, the exit and the reason, instead
-  of a blank network error.
-- Continuous DoH detection, because a setting you were asked to change once
-  is a setting you can change back.
-- Opt-in browser hardening: WebRTC forced through the proxy, prefetch and
-  prerendering off. Global settings, so they are never applied silently, and
-  fully restored when you switch them off.
-- Per-tab toolbar badge: nothing when the exit is verified, `?` while
-  checking, `!` when blocked. Its title also names any other container whose
-  server has failed, since a container's own badge only shows on its own tabs.
+- **Popup** (managed context): the timezone card shows the presented zone
+  and its provenance (*matched to the verified exit*, *from the assigned
+  server*, *pinned by you*, *country-level* …). **Pin zone…** opens a
+  searchable zone list (Auto / Off / any ICU zone); after a pin change the
+  popup offers to reload the context's open tabs, since a registration only
+  reaches new documents. **Verify** reads the live page realm and replays
+  the CreepJS derivations, line by line, with ✓/✗ per invariant.
+- **Settings page → Timezone matching**: the global switch, the
+  reload-on-change switch, a per-context table (presented zone, provenance,
+  override), and an honest list of what the feature cannot do.
+- **Badge tooltip**: `Protected — se-got-wg-001, Gothenburg · Europe/Stockholm · checked 2m ago`.
 
-Bulkhead decides how a container reaches the network, not which sites open
-in which container — that is Mozilla's [Multi-Account Containers], and the
-two compose cleanly: MAC pins a site to a container, Bulkhead pins that
-container to an exit.
+## Limitations — read before trusting this
 
-[Multi-Account Containers]: https://addons.mozilla.org/firefox/addon/multi-account-containers/
+Everything in upstream Bulkhead's
+[*What it does not protect against*](https://github.com/S4N-T0S/Bulkhead#what-it-does-not-protect-against)
+still applies to the networking half. For the timezone half:
 
-![default context on the tunnel exit](assets/popup-default-dark.png)
-
-![blocked page](assets/blocked-page-dark.png)
-
-## How it works
-
-```
-proxy.onRequest        cookieStoreId -> SOCKS5 ProxyInfo, from an in-memory
-                       map. Fires first. Assigns only; cannot block.
-
-webRequest.onBefore    decide(state, request) -> allow | block.
-                       Blocking listener; the sole authority.
-
-webRequest.onError     hard proxy errors trip health instantly. Errors that
-                       name no layer -- a timeout, a reset, a refusal --
-                       only schedule a probe, since a broken site produces
-                       the same ones. A probe's own failure is ignored here:
-                       it travels the target container's proxy but is issued
-                       by the background page, so the error arrives labelled
-                       with the wrong container.
-
-alarms                 probe non-up containers every 30s to recover; sweep
-                       healthy ones every 10m to catch silent misroutes;
-                       refresh the relay list daily, and when a relay fails,
-                       to catch a retired server.
-```
-
-Every allow/block rule lives in [`src/decide.js`](src/decide.js) as one pure
-function — no I/O, no clock, no browser APIs — and nothing else may
-re-implement a rule. That is what makes the security-critical part
-exhaustively testable, and what keeps AMO review of an `<all_urls>` proxy
-extension tractable.
-
-Choices worth knowing about:
-
-- **Health is never persisted.** A restarted browser starts every managed
-  container at `unknown`, which blocks, until a probe proves otherwise.
-- **Fail closed before hydration.** Between background load and the storage
-  read every container would otherwise read as unmanaged and go direct — a
-  window that lands exactly on session restore.
-- **Probes verify the exit, not liveness.** `am.i.mullvad.net` reports which
-  server answered; the wrong one blocks the container. Note it reports the
-  SOCKS relay name (`se-got-wg-socks5-001`), not the WireGuard hostname.
-- **Probes cannot be forged.** A probe bypasses the gate only if it carries a
-  single-use random token the background is currently holding *and* targets
-  the probe endpoint. A page pasting the marker into its URLs gets nothing:
-  unrecognised tokens take the normal path through both listeners.
-- **A check counts only if it travelled the assigned exit.** Firefox retries
-  a refused proxy down its failover list, and with a system or PAC proxy
-  configured that retry can succeed elsewhere — a perfectly good answer from
-  the wrong route. Every attempt's `proxyInfo` is recorded, and a check that
-  did not go through the exit under test is a failure, not a pass. For a
-  Mullvad relay the exit-name comparison catches this too; for a custom exit,
-  where there is no expected name to compare against, this is the only thing
-  that does.
-- **The proxy host is the literal `10.124.x.x`**, resolved once at assignment
-  time and refused if the answer is not a tunnel address. Resolving the
-  hostname per request would tell your resolver which exit each container
-  uses.
-- **`connectionIsolationKey` per container**, so a connection opened for one
-  container is never reused by another.
-- **Strict mode governs only unattributable requests.** The killswitch
-  applies regardless, so relaxing strict can never re-open a down container.
-- **Zero runtime dependencies, no build step.** What you read in `src/` is
-  what runs.
-
-## Install
-
-Not on AMO yet. Until then: `npm run build` produces the zip under `dist/`,
-or load `src/` as a temporary add-on via `about:debugging` → This Firefox →
-Load Temporary Add-on.
+- **Service workers cannot be patched.** No platform API exposes a service
+  worker's realm to page JS, and `register()` rejects blob:/data: script
+  URLs. A site fingerprinting from a SW still sees the system zone. The
+  engine logs a warning when a page registers one
+  (`serviceWorkerMode: 'warn'`). The only complete fixes live below JS:
+  `privacy.resistFingerprinting = true` (forces UTC engine-wide — your
+  matched zone would then have to be UTC) or overriding the OS timezone at
+  launch.
+- **Zone↔IP matching is necessary, not sufficient.** `navigator.language`,
+  Accept-Language, WebRTC, and the rest of the fingerprint are out of scope.
+  A Swedish zone with `en-IR` language headers is its own signal.
+- **Country-level precision.** When the exit's city is missing or unmapped
+  (Mullvad's geo answers `city: null` for some ranges, and the offline table
+  is frozen at build time), the country's primary zone is used and the UI
+  says *country-level*. In the US/CA/BR/RU/AU class that can be the wrong
+  coast; a pin is the exact fix. The city table was audited against
+  Mullvad's full live relay list (2026-10): every relay city in a multi-zone
+  country maps to a member of that country's zone set.
+- **Cross-origin *module* workers** are passed through unpatched (dynamic
+  `import()` there requires CORS the target may not grant); classic workers
+  and same-origin modules are shimmed.
+- **`world: 'MAIN'` is the only delivery mode.** If a future Firefox removes
+  it, this feature reports itself unavailable (popup/settings banner) rather
+  than degrading to an isolated-world half-patch that would fail lie
+  detection while looking installed. The killswitch is unaffected either way.
+- **Existing documents keep their zone.** A registration reaches new
+  documents; after a server switch or a pin change, open tabs run the old
+  zone until reloaded (offered in the popup; automatable via the
+  reload-on-change setting).
+- **No JS patch is undetectable in principle.** This makes the values
+  correct and mutually consistent — which is what actually identifies you —
+  and keeps the lie surface narrow. It does not eliminate it.
 
 ## Development
 
-Node ≥ 22.13 and npm. On Windows you also need 7-Zip on PATH
-(`scoop install 7zip`): the Firefox installer is a 7z archive and `setup`
-unpacks it rather than running it, deliberately — a project about failing
-closed should not execute a binary it just downloaded. The download is
-checked against Mozilla's published SHA-256 before anything touches it.
-
 ```
-npm install
-npm run setup        # fetches Firefox Developer Edition into .cache/firefox/
-npm start            # web-ext against that Firefox, fresh temp profile
-```
-
-`npm start` always uses a fresh temporary profile, on purpose: a profile
-reused with `--keep-profile-changes` caches the extension's permission grant
-set, and a permission added to the manifest later stays silently ungranted —
-`browser.privacy === undefined` and an hour gone. The temp profile also gets
-`failover_direct=false` and `trr.mode=5` so development happens in the safe
-configuration.
-
-| script | |
-|---|---|
-| `npm test` | unit tests (`node:test`, no framework) |
-| `npm run test:coverage` | same, with coverage |
-| `npm run test:e2e` | real Firefox, real relays — see below |
-| `npm run lint` | eslint |
-| `npm run lint:amo` | addons-linter, gated at 0 errors / 0 warnings / 0 notices |
-| `npm run typecheck` | tsc over JSDoc annotations, no emit |
-| `npm run build` | `dist/bulkhead-<version>.zip` |
-
-## Testing
-
-Unit tests cover the decision function exhaustively — including a sweep over
-every combination of hydration × strict × health × attribution × request type
-asserting that nothing defaults open — plus the relay-list adapters and
-helpers.
-
-`npm run test:e2e` copies `src/` to a build dir, appends a self-test to the
-background, and drives the project-local Firefox with `web-ext` on a fresh
-profile. Cases that need live relays detect the tunnel and skip without it
-(CI runs the rest headless).
-
-The same suite runs against any build in `.cache/firefox`, so the floor in
-`strict_min_version` is a tested claim rather than a guess:
-
-```
-FIREFOX_CHANNEL=release FIREFOX_VERSION=142.0 npm run setup
-FIREFOX_BINARY=.cache/firefox/142.0-win64/core/firefox.exe npm run test:e2e
+npm ci
+npm test          # 100 unit tests: decide, relays, fmt, zones, and the
+                  # realm engine run end-to-end in node:vm with CreepJS's
+                  # own derivations as the assertions
+npm run lint      # eslint, upstream config (tz-realm.js exempt as vendored)
+npm run typecheck # tsc --strict over src + types (same exemption)
+npm run lint:amo  # addons-linter at upstream's 0/0/0 bar
+npm run build     # web-ext build → dist/
+npm run audit:cities   # re-audit the offline city table against Mullvad's
+                  # LIVE relay list; exits non-zero when a new server city
+                  # needs a CITY_BLOB entry (currently: 553/553 exact)
 ```
 
-Verified against Firefox 142 (the declared minimum) and 154, with live
-relays, identical results on both:
+`test/unit/tz-realm.test.js` is the port's safety net: it builds the exact
+registered payload, runs it in a fresh `node:vm` context per zone
+(including DST, half-hour, 45-minute and LMT-second zones), and asserts the
+CreepJS derivations, the ICU ground truth for winter/summer offsets, and
+every `searchLies` invariant. Caveat stated honestly: node:vm is V8 and
+production is SpiderMonkey — the engine itself was field-verified against
+Gecko upstream; the suite proves the *port* is faithful.
 
-| case | result |
-|---|---|
-| dead proxy (`10.124.255.254`) | navigation aborted (`NS_ERROR_ABORT`) and never completed, reason `proxy-down`, explainer page rendered |
-| server switched while a probe is in flight | the replacement is re-probed, never inherits the old verdict |
-| live relay (`se-got-wg-001`) | health `up`, traffic passes |
-| deliberately wrong exit configured | health `misrouted`, blocked |
-| no containers managed | extension inert, nothing logged |
-| default context on the tunnel exit, tunnel down | tabs blocked **and** the extension's own relay fetch blocked |
-| default context on the tunnel exit, tunnel up | verified against `am.i.mullvad.net`, traffic passes |
-| hardening apply / clear | takes control, then fully restores |
-| loopback from a blocked container, toggle off | blocked, reason `proxy-down` |
-| loopback from a blocked container, toggle on | reaches a local server, while everything else in that container stays blocked |
-| custom exit with nothing listening | health `down`, navigation blocked |
-| custom exit on a live SOCKS server | health `up`, reachability verified through the exit itself |
+### Layout of the additions
 
-There is also a manual diagnostic for the transition window itself:
-`node test/e2e/transition.mjs --failover-direct=true` pins the default
-context to a live relay, streams exit checks, drops the tunnel mid-stream
-through the `mullvad` CLI, and counts whether any request escapes to a
-direct connection. Needs the CLI and a logged-in app; restores the tunnel
-state it found.
+```
+src/zones.js      pure geography: country/city → IANA zone + derive() precedence
+src/tz-realm.js   the page-realm engine (ported verbatim; lint/tsc-exempt)
+src/tz.js         delivery: contentScripts registration lifecycle, payload,
+                  overrides, verify source
+src/background.js [bhtz] hooks only: probe geo capture, markHealth sync,
+                  hydrate rehydrate, storage events, badge title, getState,
+                  4 RPC commands — decide()/gate/router untouched
+src/popup/*       timezone card, pin picker, verify view
+src/options/*     Timezone matching card
+test/unit/zones.test.js, test/unit/tz-realm.test.js
+```
 
-**The manual test that matters**, once set up: assign two containers to
-different exits and confirm on `https://am.i.mullvad.net/json` that they
-differ. Drop the Mullvad tunnel and reload — you must get the blocked page,
-not the site. Then set `network.proxy.failover_direct` back to `true` and
-repeat to watch Firefox leak without the pref. That contrast is the whole
-point. Finish with a glance at `about:networking#dns` for lookups that
-shouldn't be there.
+## Attribution and license
 
-## Roadmap
+GPL-3.0-only, like its upstream.
 
-Support for other providers that expose in-tunnel SOCKS the way Mullvad
-does, and HTTP/HTTPS proxy types alongside SOCKS5 for custom exits. The
-plumbing is already provider-shaped: an assignment is just an address, a
-port and an optional expected exit name.
+- **Bulkhead** © S4N-T0S — <https://github.com/S4N-T0S/Bulkhead> (GPL-3.0).
+  This fork modifies `background.js`, `relays.js`, `manifest.json`,
+  `ui/fmt.js`, the popup, the options page and `types/globals.d.ts`; each
+  modification is marked `[bhtz]`. Modified files carry prominent notices,
+  per GPL-3.0 §5.
+- **Timezone Lock** userscript v3.3.4 (MIT) — `src/tz-realm.js` is its realm
+  engine, and `src/zones.js` adapts its tzdb/country/city tables; both files
+  say so in their headers.
+- Timezone data: tzdb `zone.tab` (public domain); country names: umpirsky
+  country-list (MIT).
 
-## Reporting a security issue
-
-See [SECURITY.md](SECURITY.md). Anything that gets a managed context's
-traffic onto the network without going through its assigned exit is the
-report I most want to receive.
-
-## Credits
-
-By [S4N-T0S](https://s4nt0s.eu). Country flags are from
-[circle-flags](https://github.com/HatScripts/circle-flags) (MIT), vendored in
-`src/flags/`.
-
-Not affiliated with, endorsed by, or supported by Mullvad AB. “Mullvad” is
-used only to describe compatibility.
-
-## License
-
-GPL-3.0-only. See [LICENSE](LICENSE).
+See `src/NOTICE.md`.

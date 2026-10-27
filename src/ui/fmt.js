@@ -226,7 +226,26 @@
     return Object.fromEntries([...assigned].map(([host, ids]) => [host, ids.map(id => names[id] || 'another container')]))
   }
 
-  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, flagSrc, relayTags, exitName, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy }
+  // [bhtz] How a context's timezone came about, in prose. Evidence order:
+  // what the user said, then what the verified exit said, then weaker.
+  /** @type {Record<string, string>} */
+  const TZ_SOURCE_TEXT = Object.assign(Object.create(null), {
+    pin: 'pinned by you',
+    probe: 'matched to the verified exit',
+    relay: 'from the assigned server (exit not verified yet)',
+    off: 'off — pages here see your system zone',
+    disabled: 'matching is switched off',
+    unmanaged: 'no exit assigned — never spoofed',
+    unknown: 'exit location not known yet'
+  })
+
+  /** @param {string | undefined} source @param {boolean} [approx] @returns {string} */
+  function tzSourceText (source, approx) {
+    const base = (source && TZ_SOURCE_TEXT[source]) || source || 'unknown'
+    return approx ? `${base} · country-level — city not in the offline table` : base
+  }
+
+  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, flagSrc, relayTags, exitName, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy, tzSourceText }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

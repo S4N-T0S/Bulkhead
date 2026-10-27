@@ -2,8 +2,14 @@
 // Runtime wiring. decide() owns every allow/block rule and nothing here may
 // re-implement one; this file's job is state, I/O, health and what the user
 // sees. relays.js owns the relay-list logic.
+//
+// Bulkhead TZ: this fork adds timezone matching. zones.js owns the geography,
+// tz.js (tzlib) owns injection, tz-realm.js owns the page-realm engine. The
+// hooks below are the complete integration surface — every one is marked
+// [bhtz] and all of them are additive: the killswitch, the probe, the gate
+// and the router are untouched upstream code.
 
-/* global decide, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt */
+/* global decide, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt, tzlib */
 
 // How long Firefox ignores this proxy after it fails -- a blacklist
 // duration, not a grace period (nsIProtocolProxyService: "the length of time
@@ -164,6 +170,13 @@ async function hydrate () {
     Promise.all(Object.keys(containers).map(containerName)).then(updateAllBadges)
     checkAssignedOffline()
     checkDoh()
+    // [bhtz] Rebuild timezone registrations from assignments + overrides.
+    // Registrations live as long as the page that made them (this one), so
+    // every startup and every assignment change lands here. Never blocks the
+    // killswitch: a timezone failure is a feature failure, not a gate failure.
+    tzlib.loadSettings()
+      .then(() => tzlib.rehydrate(containers))
+      .catch(e => log('[bulkhead-tz] rehydrate failed:', String(e)))
   })
 }
 
@@ -186,6 +199,21 @@ async function hydrateWithRetry () {
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return
   if (changes.containers || changes.strict || changes.allowLocal) hydrateWithRetry()
+  // [bhtz] The timezone settings changed underneath us — including from our
+  // own setOverride(). Re-read and re-derive; hydrate()'s own rehydrate also
+  // runs when containers changed, and sync() is idempotent, so the overlap
+  // costs nothing. Switching the feature off must pull every script, which
+  // rehydrate would not do for contexts that are still assigned.
+  if (changes.tzEnabled || changes.tzOverrides || changes.tzReload) {
+    tzlib.loadSettings()
+      .then(async () => {
+        const s = await tzlib.snapshot()
+        if (!s.enabled) await tzlib.unregisterAll()
+        else await tzlib.rehydrate(state.containers)
+        updateAllBadges()
+      })
+      .catch(e => log('[bulkhead-tz] settings reload failed:', String(e)))
+  }
 })
 
 // Router: picks the SOCKS exit for each request. Fires before webRequest,
@@ -452,6 +480,7 @@ async function probe (id) {
       // route entirely.
       delete renamed[id]
       const seen = typeof j.mullvad_exit_ip_hostname === 'string' ? j.mullvad_exit_ip_hostname : ''
+      setGeo(id, j) // [bhtz]
       markHealth(id, 'up', seen || 'reachable', typeof j.ip === 'string' ? j.ip : '')
     } else if (!j.mullvad_exit_ip) {
       // Honest evidence -- this probe travelled its own proxy -- so it also
@@ -468,6 +497,7 @@ async function probe (id) {
       markHealth(id, 'misrouted', `expected ${c.socksHost}, got ${j.mullvad_exit_ip_hostname}`)
     } else {
       delete renamed[id]
+      setGeo(id, j) // [bhtz]
       markHealth(id, 'up', j.mullvad_exit_ip_hostname, typeof j.ip === 'string' ? j.ip : '')
     }
   } catch (e) {
@@ -573,6 +603,20 @@ function relayStillDown () {
   return Object.values(state.containers).some(o => Boolean(o.socksHost) && convicted(o.health))
 }
 
+// [bhtz] The probe's own geography, kept with the verdict it arrived with.
+// am.i.mullvad.net answers with the country (always) and city (often null
+// for non-Mullvad ranges) of whoever reached it — and whoever reached it
+// through a verified probe is exactly this container's exit. In-memory only,
+// like health: a restarted browser trusts nothing until a probe re-answers.
+/** @param {string} id @param {{ country?: unknown, city?: unknown }} j */
+function setGeo (id, j) {
+  const c = state.containers[id]
+  if (!c) return
+  const country = typeof j.country === 'string' && j.country ? j.country : null
+  const city = typeof j.city === 'string' && j.city ? j.city : null
+  c.lastGeo = country || city ? { country, city, at: Date.now() } : null
+}
+
 /** @param {string} id @param {Health} health @param {string} detail @param {string} [exitIp] */
 function markHealth (id, health, detail, exitIp) {
   const c = state.containers[id]
@@ -582,6 +626,11 @@ function markHealth (id, health, detail, exitIp) {
   c.healthDetail = detail
   c.healthAt = Date.now()
   c.exitIp = health === 'up' ? (exitIp || '') : ''
+  // [bhtz] Health gates probe geography: zonelib trusts lastGeo only while
+  // the verdict is 'up', so every transition re-derives what this context's
+  // pages should present. Idempotent — an unchanged zone touches no
+  // registration — which makes one choke point cheap enough.
+  tzlib.sync(id, c).catch(e => log('[bulkhead-tz] sync failed:', String(e)))
   // Deliberately no notification on a verdict: relays drop on every reconnect
   // and wake, a tunnel going down takes every container with it, and the
   // badge and blocked page already say so.
@@ -691,7 +740,10 @@ function badgeTab (tab) {
       ? fmt.exitName(c)
       : c.host === MULLVAD_DIRECT.host ? 'Mullvad tunnel exit' : `${c.host}, ${c.city}`
     const ago = fmt.timeAgo(c.healthAt, Date.now())
-    title = `Protected — ${where}${ago ? ` · checked ${ago}` : ''}`
+    // [bhtz] the matched zone rides along: one hover answers "where am I,
+    // and what do my pages think" without opening the popup
+    const zone = tzlib.zoneOf(tab.cookieStoreId || '')
+    title = `Protected — ${where}${zone ? ` · ${zone}` : ''}${ago ? ` · checked ${ago}` : ''}`
   } else if (c && c.health === 'unknown') {
     text = '?'
     color = '#8f6400'
@@ -1184,6 +1236,9 @@ async function getState () {
     customExits: (Array.isArray(s.customExits) ? s.customExits : [])
       .filter((/** @type {unknown} */ e) => e && typeof e === 'object')
       .map((/** @type {CustomExit} */ e) => ({ id: e.id, label: e.label, host: e.host, port: e.port, username: e.username })),
+    // [bhtz] timezone-matching state: what each context presents, why, and
+    // whether the delivery mechanism itself is healthy
+    tz: tzlib.snapshot(),
     version: VERSION
   }
 }
@@ -1231,6 +1286,46 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
       return deleteCustomExit(String(msg.id || ''))
     case 'ackPrefs':
       await browser.storage.local.set({ prefsAck: msg.on === true })
+      return { ok: true }
+    // [bhtz] timezone matching ------------------------------------------
+    case 'tzOverride': {
+      // value: a zone string to pin, 'off' to never spoof here, or
+      // 'auto'/null to follow the exit again
+      const out = await tzlib.setOverride(String(msg.cookieStoreId || ''), typeof msg.value === 'string' ? msg.value : null)
+      if (out.ok) {
+        // setOverride wrote to storage, which echoes into onChanged; sync
+        // directly too so the caller's refresh() cannot race the event
+        await tzlib.sync(String(msg.cookieStoreId), state.containers[msg.cookieStoreId])
+        updateBadgesFor(String(msg.cookieStoreId))
+      }
+      return out
+    }
+    case 'tzReloadTabs': {
+      const n = await tzlib.reloadContextTabs(String(msg.cookieStoreId || ''))
+      return { ok: true, reloaded: n }
+    }
+    case 'tzVerify': {
+      // Runs the observation code in the target tab's ISOLATED world; it
+      // reads the page realm through wrappedJSObject, so what comes back is
+      // what the page itself would answer — the honest direction to look
+      // from. executeScript rejects on about:/moz-extension:/privileged
+      // pages; that is reported, not swallowed.
+      const tabId = Number(msg.tabId)
+      if (!Number.isInteger(tabId) || tabId < 0) return { ok: false, error: 'bad tab' }
+      try {
+        const results = await browser.tabs.executeScript(tabId, { code: tzlib.verifySource() })
+        const r = Array.isArray(results) ? results[0] : null
+        if (!r || r.ok !== true) return { ok: false, error: (r && r.error) || 'no answer from the page' }
+        return { ok: true, result: r }
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) }
+      }
+    }
+    case 'tzSetEnabled':
+      await browser.storage.local.set({ tzEnabled: msg.on === true })
+      return { ok: true }
+    case 'tzSetReload':
+      await browser.storage.local.set({ tzReload: msg.on === true })
       return { ok: true }
     case 'favorite':
       return serialize(async () => {

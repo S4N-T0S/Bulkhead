@@ -9,6 +9,8 @@
 
   /** @type {string} */
   let cookieStoreId = 'firefox-default'
+  /** [bhtz] the active tab, for Verify */
+  let activeTabId = -1
   /** @type {{ cookieStoreId: string, name: string, colorCode: string } | null} */
   let identity = null
   /** @type {StateSnapshot | null} */
@@ -24,6 +26,7 @@
   async function init () {
     const [tab] = await browser.tabs.query({ active: true, currentWindow: true })
     cookieStoreId = tab?.cookieStoreId || 'firefox-default'
+    activeTabId = tab?.id ?? -1 // [bhtz]
     if (cookieStoreId.startsWith('firefox-container-')) {
       identity = await browser.contextualIdentities.get(cookieStoreId).catch(() => null)
       // a container tab whose identity cannot be read still has a routable
@@ -63,6 +66,9 @@
   }
 
   let picking = false
+  // [bhtz] set after a pin change; the refresh timer rebuilds the view every
+  // 3s, so the reload offer has to survive renders until acted on or left
+  let reloadOffer = false
 
   function renderMain () {
     if (!snapshot) return
@@ -162,6 +168,13 @@
     actions.className = 'row wrap'
     actions.append(md, pick)
     view.append(actions)
+
+    // [bhtz] a pin on an unassigned context is legitimate — the card says
+    // plainly that nothing backs it up — but stay out of the way otherwise
+    if (snapshot && snapshot.tz && (snapshot.tz.overrides[cookieStoreId] || snapshot.tz.zones[cookieStoreId])) {
+      renderTzCard()
+      if (reloadOffer) offerReload()
+    }
   }
 
   function renderUnmanaged () {
@@ -182,6 +195,12 @@
     btn.textContent = 'Proxy this container'
     btn.addEventListener('click', () => openPicker(''))
     view.append(btn)
+
+    // [bhtz]
+    if (snapshot && snapshot.tz && (snapshot.tz.overrides[cookieStoreId] || snapshot.tz.zones[cookieStoreId])) {
+      renderTzCard()
+      if (reloadOffer) offerReload()
+    }
   }
 
   /** @param {ContainerConfig} c */
@@ -228,6 +247,9 @@
     card.append(status)
     view.append(card)
 
+    renderTzCard() // [bhtz]
+    if (reloadOffer) offerReload() // [bhtz]
+
     if (c.health !== 'up') {
       const note = document.createElement('div')
       note.className = `banner ${c.health === 'unknown' ? 'warn' : 'danger'}`
@@ -273,6 +295,288 @@
     })
     actions.append(recheck, change, stop)
     view.append(actions)
+  }
+
+  /* ---- [bhtz] timezone matching ----------------------------------------
+   * One card, two subviews. The card states what pages in this context
+   * present and why; the subviews change the pin and check the live page
+   * realm. All of it is additive: nothing here touches the exit UI above. */
+
+  function renderTzCard () {
+    if (!snapshot) return
+    const tz = snapshot.tz
+    if (!tz) return
+
+    const d = tz.zones[cookieStoreId]
+    const ov = tz.overrides[cookieStoreId]
+
+    const card = document.createElement('div')
+    card.className = 'exit-card tz-card'
+
+    const row = document.createElement('div')
+    row.className = 'row'
+    const globe = document.createElement('span')
+    globe.className = 'tz-glyph'
+    globe.setAttribute('aria-hidden', 'true')
+    globe.textContent = '🕐'
+    const name = document.createElement('span')
+    name.className = 'place grow mono'
+    name.textContent = d ? d.zone : ov === 'off' ? 'System zone' : tz.enabled ? '—' : 'Matching off'
+    row.append(globe, name)
+    card.append(row)
+
+    const why = document.createElement('div')
+    why.className = 'sub'
+    why.textContent = fmt.tzSourceText(d ? d.source : ov === 'off' ? 'off' : tz.enabled ? 'unknown' : 'disabled', d && d.approx)
+    card.append(why)
+
+    // A refused MAIN-world registration means pages run with the machine's
+    // real zone while the exit says otherwise — say so instead of showing a
+    // zone that is not being presented.
+    if (tz.enabled && tz.supported === false) {
+      const b = document.createElement('div')
+      b.className = 'banner danger'
+      b.textContent = 'This Firefox refused main-world script injection, so no timezone can be installed. Bulkhead TZ needs Firefox 128 or newer.'
+      card.append(b)
+    } else if (tz.enabled && tz.error) {
+      const b = document.createElement('div')
+      b.className = 'banner warn'
+      b.textContent = `Timezone injection failed: ${tz.error}`
+      card.append(b)
+    }
+
+    const actions = document.createElement('div')
+    actions.className = 'row wrap'
+    const pin = document.createElement('button')
+    pin.className = 'quiet'
+    pin.textContent = d && d.source === 'pin' ? 'Change pin…' : ov === 'off' ? 'Pinned off…' : 'Pin zone…'
+    pin.addEventListener('click', () => openZonePicker())
+    const verify = document.createElement('button')
+    verify.className = 'quiet'
+    verify.textContent = 'Verify'
+    verify.title = 'Read what the current page actually reports — the same derivations CreepJS uses'
+    verify.addEventListener('click', () => openVerify())
+    actions.append(pin, verify)
+    card.append(actions)
+
+    view.append(card)
+  }
+
+  async function openZonePicker () {
+    picking = true
+    reloadOffer = false
+    view.textContent = ''
+
+    const back = document.createElement('div')
+    back.className = 'row backbar'
+    const backBtn = document.createElement('button')
+    backBtn.className = 'quiet'
+    backBtn.textContent = '‹ Back'
+    backBtn.addEventListener('click', () => {
+      picking = false
+      renderMain()
+    })
+    const title = document.createElement('span')
+    title.className = 'sub grow'
+    title.textContent = `Timezone for ${identity ? identity.name : contextLabel()}`
+    back.append(backBtn, title)
+    view.append(back)
+
+    const tz = snapshot && snapshot.tz
+    const current = tz ? tz.overrides[cookieStoreId] : undefined
+    const d = tz ? tz.zones[cookieStoreId] : undefined
+
+    const note = document.createElement('p')
+    note.className = 'sub'
+    note.textContent = 'Pins stand until you clear them and outrank every lookup. A pin on a context with no exit of its own is a claim the network will not back up — sites see your real IP with it.'
+    view.append(note)
+
+    /** @param {string} label @param {string | null} sub @param {string} value @param {boolean} isCurrent */
+    const mk = (label, sub, value, isCurrent) => {
+      const b = document.createElement('button')
+      b.className = `tz-entry row${isCurrent ? ' current' : ''}`
+      const l = document.createElement('span')
+      l.className = 'grow'
+      l.textContent = label
+      b.append(l)
+      if (sub) {
+        const s = document.createElement('span')
+        s.className = 'sub mono'
+        s.textContent = sub
+        b.append(s)
+      }
+      b.addEventListener('click', async () => {
+        b.disabled = true
+        await browser.runtime.sendMessage({ cmd: 'tzOverride', cookieStoreId, value })
+        picking = false
+        reloadOffer = true
+        await refresh()
+      })
+      return b
+    }
+
+    const specials = document.createElement('div')
+    specials.className = 'tz-specials'
+    specials.append(
+      mk('Match the exit', 'auto', 'auto', current === undefined && Boolean(d)),
+      mk('Off — system zone', 'never spoof here', 'off', current === 'off')
+    )
+    view.append(specials)
+
+    const search = document.createElement('input')
+    search.type = 'search'
+    search.placeholder = 'Search zones — oslo, tokyo, america/…'
+    search.setAttribute('aria-label', 'Search timezones')
+    search.className = 'tz-search'
+    view.append(search)
+
+    const list = document.createElement('div')
+    list.className = 'tz-list scroller'
+    view.append(list)
+
+    // The engine's own list, from the same ICU the patch delegates to: a
+    // zone that appears here is a zone the realm patch can install.
+    /** @type {string[]} */
+    let zones = []
+    try {
+      zones = Intl.supportedValuesOf('timeZone')
+    } catch {
+      zones = []
+    }
+    const pinned = typeof current === 'string' && current !== 'off' ? current : null
+
+    function renderList () {
+      const q = search.value.trim().toLowerCase().replace(/_/g, ' ')
+      list.textContent = ''
+      const shown = zones
+        .filter(z => !q || z.toLowerCase().replace(/_/g, ' ').includes(q))
+        .slice(0, 400)
+      for (const z of shown) {
+        const b = document.createElement('button')
+        b.className = `tz-entry${z === pinned ? ' current' : ''}`
+        b.textContent = z
+        b.addEventListener('click', async () => {
+          b.disabled = true
+          await browser.runtime.sendMessage({ cmd: 'tzOverride', cookieStoreId, value: z })
+          picking = false
+          reloadOffer = true
+          await refresh()
+        })
+        list.append(b)
+      }
+      if (!shown.length) {
+        const empty = document.createElement('div')
+        empty.className = 'msg'
+        empty.textContent = 'No zone matches that.'
+        list.append(empty)
+      }
+    }
+    search.addEventListener('input', renderList)
+    renderList()
+    search.focus()
+  }
+
+  // Open documents were loaded under the old zone; the registration only
+  // reaches NEW documents. Offer the reload instead of surprising anyone.
+  // Re-rendered by renderMain while reloadOffer stands, so the 3s refresh
+  // timer cannot wipe it; back-navigation and the click itself clear it.
+  function offerReload () {
+    const bar = document.createElement('div')
+    bar.className = 'banner row'
+    const msgSpan = document.createElement('span')
+    msgSpan.className = 'sub grow'
+    msgSpan.textContent = 'Open tabs still run the old zone.'
+    const go = document.createElement('button')
+    go.textContent = 'Reload them'
+    go.addEventListener('click', async () => {
+      go.disabled = true
+      reloadOffer = false
+      await browser.runtime.sendMessage({ cmd: 'tzReloadTabs', cookieStoreId })
+      window.close()
+    })
+    bar.append(msgSpan, go)
+    view.append(bar)
+  }
+
+  async function openVerify () {
+    picking = true
+    view.textContent = ''
+    reloadOffer = false
+
+    const back = document.createElement('div')
+    back.className = 'row backbar'
+    const backBtn = document.createElement('button')
+    backBtn.className = 'quiet'
+    backBtn.textContent = '‹ Back'
+    backBtn.addEventListener('click', () => {
+      picking = false
+      renderMain()
+    })
+    const title = document.createElement('span')
+    title.className = 'sub grow'
+    title.textContent = 'What the page actually reports'
+    back.append(backBtn, title)
+    view.append(back)
+
+    const busy = document.createElement('div')
+    busy.className = 'msg'
+    busy.textContent = 'Reading the page realm…'
+    view.append(busy)
+
+    const expected = snapshot && snapshot.tz ? (snapshot.tz.zones[cookieStoreId] || {}).zone || null : null
+    /** @type {{ ok: boolean, error?: string, result?: Record<string, any> }} */
+    const res = await browser.runtime.sendMessage({ cmd: 'tzVerify', tabId: activeTabId })
+      .catch(e => ({ ok: false, error: String(e) }))
+    busy.remove()
+
+    if (!res || !res.ok || !res.result) {
+      const b = document.createElement('div')
+      b.className = 'banner warn'
+      b.textContent = `Cannot verify this tab: ${(res && res.error) || 'no answer'}. Verification needs an ordinary web page open in this context.`
+      view.append(b)
+      return
+    }
+
+    const r = res.result
+    const rows = [
+      ['reported zone', r.tz, expected ? r.tz === expected : null],
+      ['getTimezoneOffset()', String(r.offset), null],
+      ['offset from string parsing (CreepJS)', String(r.offsetComputed), r.offsetComputed === r.offset],
+      ['year-1113 LMT probe (CreepJS "computed location")', r.lmtMatch === true ? 'system = resolvedOptions' : r.lmtMatch === false ? `MISMATCH (${r.lmtSystem} vs ${r.lmtResolved})` : 'error', r.lmtMatch === true ? true : r.lmtMatch === false ? false : null],
+      ['about:blank probe realm (CreepJS lie inspection)', r.iframeTz == null ? 'error' : `${r.iframeTz} · offset ${r.iframeOffset}`, r.iframeTz == null ? null : r.iframeTz === r.tz],
+      ['local getters vs Intl', r.gettersAgree === null ? 'error' : r.gettersAgree ? 'agree' : 'DISAGREE', r.gettersAgree === null ? null : Boolean(r.gettersAgree)],
+      ['Date#toString zone name', String(r.dateToString).replace(/^.*\((.*)\).*$/, '$1'), null],
+      ['injection', r.stamp ? (r.stamp.late ? 'LATE — page ran first' : 'document-start, clean') : 'no stamp — engine not present', r.stamp ? !r.stamp.late : false]
+    ]
+
+    const table = document.createElement('div')
+    table.className = 'tz-verify'
+    for (const [label, value, ok] of rows) {
+      const row = document.createElement('div')
+      row.className = 'row tz-vrow'
+      const mark = document.createElement('span')
+      mark.className = ok === true ? 'good' : ok === false ? 'bad' : 'sub'
+      mark.textContent = ok === true ? '✓' : ok === false ? '✗' : '·'
+      const l = document.createElement('span')
+      l.className = 'sub grow'
+      l.textContent = label
+      const v = document.createElement('span')
+      v.className = 'mono'
+      v.textContent = value
+      row.append(mark, l, v)
+      table.append(row)
+    }
+    view.append(table)
+
+    const clean = rows.every(([, , ok]) => ok !== false)
+    const verdict = document.createElement('div')
+    verdict.className = `banner ${clean ? '' : 'danger'}`
+    verdict.textContent = expected
+      ? clean
+        ? `Consistent — the page presents ${expected} everywhere a fingerprinter looks.`
+        : 'Inconsistent — something on this page is not presenting the installed zone. Reload the tab; if it persists, check for another timezone-spoofing extension or userscript.'
+      : 'No zone is expected here (unmanaged or matching off), so nothing to pass or fail — the values above are what the page reports.'
+    view.append(verdict)
   }
 
   /** @param {string} currentHost */

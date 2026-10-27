@@ -20,7 +20,7 @@
     snapshot = st
     identities = ids
     // one bad section should not blank the whole page
-    for (const render of [renderSetup, renderOffline, renderContainers, renderRelayMeta, renderCustom, renderLog]) {
+    for (const render of [renderSetup, renderOffline, renderContainers, renderTimezones, renderRelayMeta, renderCustom, renderLog]) {
       try {
         render()
       } catch (e) {
@@ -31,6 +31,11 @@
     strict.checked = st.strict
     const allowLocal = /** @type {HTMLInputElement} */ ($('allow-local'))
     allowLocal.checked = st.allowLocal
+    // [bhtz]
+    const tzEnabled = /** @type {HTMLInputElement} */ ($('tz-enabled'))
+    tzEnabled.checked = st.tz.enabled !== false
+    const tzReload = /** @type {HTMLInputElement} */ ($('tz-reload'))
+    tzReload.checked = st.tz.reloadOnChange === true
     $('version').textContent = `v${st.version}`
   }
 
@@ -357,6 +362,162 @@
         actionRow.append(add)
       }
       actions.append(actionRow)
+      tbody.append(tr)
+    }
+  }
+
+  // -- [bhtz] timezone matching table
+
+  let zonesListFilled = false
+
+  function renderTimezones () {
+    if (!snapshot) return
+    const tz = snapshot.tz
+
+    // The state line: honest about the delivery mechanism, not just the toggle.
+    const stateEl = $('tz-state')
+    stateEl.textContent = !tz.enabled
+      ? 'off'
+      : tz.supported === false
+        ? 'unavailable on this Firefox'
+        : tz.error
+          ? 'injection failing'
+          : 'active'
+
+    const banner = $('tz-banner')
+    banner.textContent = ''
+    if (tz.enabled && tz.supported === false) {
+      const b = document.createElement('div')
+      b.className = 'banner danger'
+      b.textContent = 'This Firefox refused main-world script injection, so no timezone can be installed anywhere. Bulkhead TZ needs Firefox 128 or newer; the killswitch above is unaffected.'
+      banner.append(b)
+    } else if (tz.enabled && tz.error) {
+      const b = document.createElement('div')
+      b.className = 'banner warn'
+      b.textContent = `Timezone injection failed: ${tz.error}`
+      banner.append(b)
+    }
+
+    // One datalist of every zone this engine's ICU accepts — the same list
+    // the realm patch validates against, so a zone offered here always installs.
+    if (!zonesListFilled) {
+      const dl = $('tz-zones')
+      try {
+        for (const z of Intl.supportedValuesOf('timeZone')) {
+          const o = document.createElement('option')
+          o.value = z
+          dl.append(o)
+        }
+      } catch { /* older engine: input still validates server-side */ }
+      zonesListFilled = true
+    }
+
+    const tbody = $('tz-rows')
+    tbody.textContent = ''
+    const rows = [
+      { cookieStoreId: 'firefox-default', name: 'No container', colorCode: '' },
+      { cookieStoreId: 'firefox-private', name: 'Private windows', colorCode: '' },
+      ...identities
+    ]
+    for (const ident of rows) {
+      const id = ident.cookieStoreId
+      const c = snapshot.containers[id]
+      const d = tz.zones[id]
+      const ov = tz.overrides[id]
+
+      const tr = document.createElement('tr')
+
+      const nameCell = tr.insertCell()
+      const nameRow = document.createElement('div')
+      nameRow.className = 'row'
+      const swatch = document.createElement('span')
+      swatch.className = 'swatch'
+      if (ident.colorCode) swatch.style.background = ident.colorCode
+      else swatch.classList.add('builtin')
+      const name = document.createElement('span')
+      name.textContent = ident.name
+      nameRow.append(swatch, name)
+      nameCell.append(nameRow)
+
+      const zoneCell = tr.insertCell()
+      if (d) {
+        const zone = document.createElement('div')
+        zone.className = 'mono'
+        zone.textContent = d.zone
+        const why = document.createElement('span')
+        why.className = 'sub'
+        why.textContent = fmt.tzSourceText(d.source, d.approx)
+        zoneCell.append(zone, why)
+      } else {
+        const none = document.createElement('span')
+        none.className = 'sub'
+        none.textContent = !tz.enabled
+          ? 'matching off'
+          : ov === 'off'
+            ? 'system zone (pinned off)'
+            : c
+              ? 'not known yet — waiting for a verified check'
+              : 'system zone (no exit assigned)'
+        zoneCell.append(none)
+      }
+
+      const ovrCell = tr.insertCell()
+      const wrap = document.createElement('div')
+      wrap.className = 'row wrap tz-override'
+
+      const sel = document.createElement('select')
+      sel.setAttribute('aria-label', `Timezone override for ${ident.name}`)
+      for (const [value, label] of [['auto', 'Match the exit'], ['off', 'Off — system zone'], ['pin', 'Pin a zone…']]) {
+        const o = document.createElement('option')
+        o.value = value
+        o.textContent = label
+        sel.append(o)
+      }
+      sel.value = ov === 'off' ? 'off' : typeof ov === 'string' ? 'pin' : 'auto'
+
+      const input = document.createElement('input')
+      input.type = 'text'
+      input.setAttribute('list', 'tz-zones')
+      input.placeholder = 'Europe/Oslo'
+      input.setAttribute('aria-label', `Pinned zone for ${ident.name}`)
+      input.value = typeof ov === 'string' && ov !== 'off' ? ov : ''
+      input.hidden = sel.value !== 'pin'
+
+      const apply = document.createElement('button')
+      apply.textContent = 'Apply'
+      apply.hidden = sel.value !== 'pin'
+
+      const err = document.createElement('span')
+      err.className = 'sub danger-text'
+
+      sel.addEventListener('change', async () => {
+        err.textContent = ''
+        input.hidden = sel.value !== 'pin'
+        apply.hidden = sel.value !== 'pin'
+        if (sel.value === 'pin') {
+          input.focus()
+          return
+        }
+        await browser.runtime.sendMessage({ cmd: 'tzOverride', cookieStoreId: id, value: sel.value })
+        await refresh()
+      })
+      apply.addEventListener('click', async () => {
+        err.textContent = ''
+        const value = input.value.trim()
+        if (!value) {
+          err.textContent = 'Type a zone first.'
+          return
+        }
+        const out = await browser.runtime.sendMessage({ cmd: 'tzOverride', cookieStoreId: id, value })
+        if (!out.ok) {
+          err.textContent = out.error || 'Rejected.'
+          return
+        }
+        await refresh()
+      })
+
+      wrap.append(sel, input, apply, err)
+      ovrCell.append(wrap)
       tbody.append(tr)
     }
   }

@@ -3,7 +3,13 @@ import stylistic from '@stylistic/eslint-plugin'
 import globals from 'globals'
 
 export default [
-  { ignores: ['node_modules/', '.cache/', 'dist/'] },
+  {
+    // tz-realm.js is the page-realm engine ported verbatim from the Timezone
+    // Lock userscript (MIT) — like a vendored file, it keeps its upstream
+    // formatting so any future diff against the proven source stays minimal
+    // and reviewable. Covered end-to-end by test/unit/tz-realm.test.js.
+    ignores: ['node_modules/', '.cache/', 'dist/', 'src/tz-realm.js']
+  },
   js.configs.recommended,
   stylistic.configs.customize({
     indent: 2,

@@ -136,3 +136,9 @@ dialog .picker-list { max-height: 46vh; }
 #custom-form input[type="number"] { flex: 0 1 90px; }
 #custom-error:empty { display: none; }
 #custom-error { margin-top: 10px; }
+
+/* ---- [bhtz] timezone matching ---- */
+.danger-text { color: var(--bad, #c50042); }
+.tz-override select { max-width: 170px; }
+.tz-override input[type="text"] { width: 190px; }
+#tz-table td { vertical-align: top; }

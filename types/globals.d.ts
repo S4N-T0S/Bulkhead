@@ -26,6 +26,9 @@ interface ContainerConfig {
   healthDetail?: string
   healthAt?: number
   exitIp?: string
+  /** [bhtz] country/city as the verified probe's exit reported them.
+   *  In-memory only, like health; trusted only while health is 'up'. */
+  lastGeo?: { country: string | null, city: string | null, at: number } | null
 }
 
 interface CustomExit {
@@ -145,6 +148,7 @@ declare var fmt: {
   blockedNext(reason: string, st: { ready: boolean, containers: Record<string, { health?: string }> }, id: string, wasManaged: boolean): { next: 'wait' | 'go' | 'back' | 'stop', show: string }
   nameList(names: string[]): string
   usedBy(assigned: Map<string, string[]>, names: Record<string, string>): Record<string, string[]>
+  tzSourceText(source: string | undefined, approx?: boolean): string
 }
 
 // ui/picker.js
@@ -180,7 +184,84 @@ interface StateSnapshot {
   recents: string[]
   favorites: string[]
   customExits: Omit<CustomExit, 'password'>[]
+  /** [bhtz] */
+  tz: TzSnapshot
   version: string
+}
+
+// ---- Bulkhead TZ ----
+
+type TzSource = 'pin' | 'probe' | 'relay' | 'off' | 'disabled' | 'unmanaged' | 'unknown'
+
+interface TzDerivation {
+  zone: string
+  source: TzSource
+  /** true when the city was unmappable and the country primary was used */
+  approx: boolean
+  /** human-readable derivation rule, for diagnostics */
+  rule: string
+  at: number
+}
+
+interface TzSnapshot {
+  enabled: boolean
+  reloadOnChange: boolean
+  /** null = untested; false = world:'MAIN' registration was refused */
+  supported: boolean | null
+  /** last registration error, '' when healthy */
+  error: string
+  /** cookieStoreId -> pinned zone, or 'off' */
+  overrides: Record<string, string>
+  zones: Record<string, TzDerivation>
+}
+
+interface ZoneDerivation {
+  zone: string | null
+  rule: string
+  approx: boolean
+}
+
+// zones.js
+declare var zonelib: {
+  zoneFromLocation(loc: { country?: string | null, city?: string | null, cc?: string | null }): ZoneDerivation
+  canonicalZone(raw: unknown, intl: typeof Intl): string | null
+  usableZone(z: unknown, intl: typeof Intl): boolean
+  derive(input: {
+    enabled: boolean
+    override?: string | null
+    geo?: { country?: string | null, city?: string | null } | null
+    geoTrusted?: boolean
+    config?: { city?: string, country?: string, cc?: string } | null
+    intl: typeof Intl
+  }): { zone: string | null, source: TzSource, approx: boolean, rule: string }
+  normStr(s: unknown): string
+  COUNTRY_TZ: Record<string, string[]>
+  CITY_TZ: Record<string, string>
+  NAME2ISO: Record<string, string>
+}
+
+// tz-realm.js
+declare function installTZRealm(cfg: {
+  timeZone: string
+  stealth: string
+  workerMode: string
+  serviceWorkerMode: string
+  debug: boolean
+}, self: typeof installTZRealm): void
+
+// tz.js
+declare var tzlib: {
+  loadSettings(): Promise<void>
+  sync(id: string, config: ContainerConfig | undefined): Promise<{ zone: string | null, source: string, changed: boolean }>
+  drop(id: string): Promise<void>
+  rehydrate(containers: Record<string, ContainerConfig>): Promise<void>
+  unregisterAll(): Promise<void>
+  setOverride(id: string, value: string | null): Promise<{ ok: boolean, error?: string, zone?: string | null }>
+  reloadContextTabs(id: string): Promise<number>
+  zoneOf(id: string): string
+  snapshot(): TzSnapshot
+  verifySource(): string
+  payload(zone: string): string
 }
 
 // Firefox background-window global; gone from lib.dom

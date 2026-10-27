@@ -172,6 +172,82 @@
     <ul id="harden-state" class="sub"></ul>
   </section>
 
+  <!-- [bhtz] -->
+  <section class="card" id="tz-card">
+    <div class="row">
+      <h2>Timezone matching</h2>
+      <span class="grow"></span>
+      <span id="tz-state" class="sub"></span>
+    </div>
+    <p class="sub">
+      A container's exit IP and the timezone its pages report are two halves of one story,
+      and fingerprinting scripts read both — CreepJS's timezone test derives your zone three
+      ways and compares. With matching on, every context that has an exit of its own presents
+      the IANA timezone of that exit: the zone is taken from the killswitch's own verified
+      health probe (which already rides that container's server) and mapped offline through
+      timezone-database tables. No extra request, no geo-IP service, and because a container's
+      traffic is blocked until its exit checks out, the zone is installed before the first
+      page is even allowed to load. Contexts with no exit assigned are never spoofed — a zone
+      your real IP contradicts is a louder signal than an honest one.
+    </p>
+    <label class="row setting">
+      <span class="switch"><input type="checkbox" id="tz-enabled"></span>
+      <span class="grow">
+        <strong>Match page timezone to each container's exit</strong>
+        <span class="sub block">
+          Injected in the page's own realm at document start, before any page script runs, and
+          exempt from page Content-Security-Policy. Covers Date parsing and formatting,
+          <code>Intl</code>, <code>Temporal</code>, workers and about:blank probe frames —
+          every value a script can derive, kept mutually consistent.
+        </span>
+      </span>
+    </label>
+    <label class="row setting">
+      <span class="switch"><input type="checkbox" id="tz-reload"></span>
+      <span class="grow">
+        <strong>Reload open tabs when a matched zone changes</strong>
+        <span class="sub block">
+          Off by default: a zone change (a server switch, a moved tunnel) then applies to new
+          page loads, and open documents keep the zone they loaded with. Turn this on to have
+          every tab in the context reloaded the moment its zone changes — unsaved form entries
+          in those tabs are lost.
+        </span>
+      </span>
+    </label>
+    <div id="tz-banner"></div>
+    <div class="scroller">
+      <table id="tz-table">
+        <thead>
+          <tr><th>Context</th><th>Presented zone</th><th>Override</th></tr>
+        </thead>
+        <tbody id="tz-rows"></tbody>
+      </table>
+    </div>
+    <details>
+      <summary class="sub">What timezone matching cannot do</summary>
+      <ul class="sub">
+        <li><strong>Service workers.</strong> No API exposes a service worker's realm to page
+          JavaScript, so one fingerprinting from a service worker still sees your system zone.
+          The engine warns in the console when a page registers one.</li>
+        <li><strong>Consistency with the rest of your story.</strong> A timezone that disagrees
+          with <code>navigator.language</code>, your Accept-Language or your IP's other
+          attributes is itself a signal. Matching fixes the zone↔exit pair, not the whole
+          fingerprint.</li>
+        <li><strong>Country-level precision in big countries.</strong> When the exit's city is
+          not in the offline table, the country's primary zone is used and the row says
+          “country-level”. A pin fixes any case the table misses.</li>
+        <li><strong>Anything below JavaScript.</strong> <code>privacy.resistFingerprinting</code>
+          forces UTC engine-wide and overrides this feature; if you run RFP, your matched zone
+          has to be UTC to stay consistent.</li>
+      </ul>
+      <p class="sub">
+        The page-realm engine is adapted from the Timezone Lock userscript (MIT), verified
+        against CreepJS's own derivations including its year-1113 “computed location” probe;
+        the popup's Verify button replays those exact derivations against the live page.
+      </p>
+    </details>
+  </section>
+
   <section class="card">
     <div class="row">
       <h2>Server list</h2>
@@ -242,6 +318,9 @@
   <div id="picker-error" role="alert" aria-live="assertive"></div>
   <div id="picker-mount"></div>
 </dialog>
+
+<!-- [bhtz] zone list for the pin inputs; filled from this engine's own ICU -->
+<datalist id="tz-zones"></datalist>
 
 <script src="../relays.js"></script>
 <script src="../ui/fmt.js"></script>

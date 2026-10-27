@@ -328,3 +328,20 @@ test('fromCache takes back exactly what was cached and nothing looser', () => {
   assert.throws(() => fromCache('nope'))
   assert.deepEqual(fromCache([...LIST, null, { host: 'net<script>' }, { ...LIST[0], socksHost: 'bad' }, { ...LIST[0], socksName: '' }]), LIST)
 })
+
+// [bhtz] probe geography follows the verdict it arrived with
+test('mergeAssignments keeps lastGeo only where the proxy config is unchanged', () => {
+  const prev = {
+    a: { ip: '10.124.0.1', port: 1080, socksHost: 's-1', host: 'h-1', city: '', country: '', cc: '', health: 'up', lastGeo: { country: 'Sweden', city: 'Gothenburg', at: 5 } },
+    b: { ip: '10.124.0.2', port: 1080, socksHost: 's-2', host: 'h-2', city: '', country: '', cc: '', health: 'up', lastGeo: { country: 'Greece', city: 'Athens', at: 5 } }
+  }
+  const next = {
+    a: { ip: '10.124.0.1', port: 1080, socksHost: 's-1', host: 'h-1', city: '', country: '', cc: '' },
+    b: { ip: '10.124.0.9', port: 1080, socksHost: 's-9', host: 'h-9', city: '', country: '', cc: '' }
+  }
+  const { containers } = mergeAssignments(prev, next)
+  assert.deepEqual(containers.a.lastGeo, { country: 'Sweden', city: 'Gothenburg', at: 5 })
+  // a changed config discards the old verdict AND the geography that rode with it
+  assert.equal(containers.b.lastGeo, undefined)
+  assert.equal('lastGeo' in containers.b, false)
+})

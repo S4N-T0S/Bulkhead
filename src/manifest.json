@@ -1,14 +1,14 @@
 {
   "manifest_version": 2,
-  "name": "Bulkhead",
-  "version": "1.0.5",
-  "description": "Gives each Firefox container its own Mullvad server. If that server stops working, the container's tabs stop loading rather than fall back to your real connection. Unofficial, not by Mullvad AB.",
-  "author": "S4N-T0S",
+  "name": "Bulkhead TZ",
+  "version": "1.1.0",
+  "description": "Bulkhead's fail-closed per-container Mullvad exits, plus per-container timezone matching: each container's pages present the IANA zone of the exit they are proven to use. Based on Bulkhead by S4N-T0S (GPL-3.0). Unofficial, not by Mullvad AB.",
+  "author": "S4N-T0S (Bulkhead); Bulkhead TZ contributors",
   "homepage_url": "https://github.com/S4N-T0S/Bulkhead",
 
   "browser_specific_settings": {
     "gecko": {
-      "id": "bulkhead@s4nt0s.eu",
+      "id": "{7a91c4e6-3f52-4d8b-9e07-6c25b8ad41f3}",
       "strict_min_version": "142.0",
       "data_collection_permissions": {
         "required": ["none"]
@@ -34,12 +34,12 @@
   "content_security_policy": "script-src 'self'; object-src 'none'",
 
   "background": {
-    "scripts": ["decide.js", "relays.js", "ui/fmt.js", "background.js"],
+    "scripts": ["decide.js", "relays.js", "zones.js", "tz-realm.js", "ui/fmt.js", "tz.js", "background.js"],
     "persistent": true
   },
 
   "browser_action": {
-    "default_title": "Bulkhead",
+    "default_title": "Bulkhead TZ",
     "default_popup": "popup/popup.html",
     "default_icon": "icons/hatch-dark.svg",
     "theme_icons": [

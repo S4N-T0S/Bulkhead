@@ -12,7 +12,9 @@ Works with Mullvad's SOCKS5 relays. Requires your own Mullvad account and an
 active tunnel — the relays only exist inside it. Unofficial; not affiliated
 with Mullvad AB.
 
-![the popup, one container pinned to Gothenburg](assets/popup-light.png)
+<p align="center">
+  <img src="assets/popup-light.png" alt="the popup, one container pinned to Gothenburg">
+</p>
 
 ## Why this exists
 
@@ -181,9 +183,13 @@ container to an exit.
 
 [Multi-Account Containers]: https://addons.mozilla.org/firefox/addon/multi-account-containers/
 
-![default context on the tunnel exit](assets/popup-default-dark.png)
+<p align="center">
+  <img src="assets/popup-default-dark.png" alt="default context on the tunnel exit">
+</p>
 
-![blocked page](assets/blocked-page-dark.png)
+<p align="center">
+  <img src="assets/blocked-page-dark.png" alt="blocked page">
+</p>
 
 ## How it works
 

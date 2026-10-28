@@ -13,6 +13,10 @@ active tunnel — the relays only exist inside it. Unofficial; not affiliated
 with Mullvad AB.
 
 <p align="center">
+  <a href="https://addons.mozilla.org/firefox/addon/bulkhead/"><img src="assets/get-the-addon.svg" alt="Get the add-on for Firefox" height="60"></a>
+</p>
+
+<p align="center">
   <img src="assets/popup-light.png" alt="the popup, one container pinned to Gothenburg">
 </p>
 
@@ -255,9 +259,8 @@ Choices worth knowing about:
 
 ## Install
 
-Not on AMO yet. Until then: `npm run build` produces the zip under `dist/`,
-or load `src/` as a temporary add-on via `about:debugging` → This Firefox →
-Load Temporary Add-on.
+From [addons.mozilla.org](https://addons.mozilla.org/firefox/addon/bulkhead/).
+Firefox 142 or later, desktop.
 
 ## Development
 

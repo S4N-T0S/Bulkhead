@@ -4,7 +4,7 @@
 // files as modules and hide their exports -- the globals they attach are
 // declared here instead.
 
-type Health = 'up' | 'down' | 'misrouted' | 'unknown'
+type Health = 'up' | 'down' | 'misrouted' | 'unknown' | 'taken'
 
 interface ContainerConfig {
   /** Literal 10.124.x.x for relays; a custom exit may carry a hostname */
@@ -37,10 +37,24 @@ interface CustomExit {
   password: string
 }
 
+/** What Firefox reports will carry a request; absent for a direct one */
+interface RouteInfo {
+  type?: string
+  host?: string
+  port?: number
+  proxyDNS?: boolean
+  connectionIsolationKey?: string
+}
+
 interface GateRequest {
   url: string
   cookieStoreId?: string
   type?: string
+  proxyInfo?: RouteInfo | null
+  /** The router gave this request an exit */
+  routed?: boolean
+  /** For a live probe, the container it is checking */
+  probeFor?: string
 }
 
 interface KillswitchState {
@@ -93,6 +107,8 @@ declare function decide(state: KillswitchState, req: GateRequest): Verdict
 declare function probeToken(url: string): string | null
 declare function isProbeUrl(url: string): boolean
 declare function isLoopbackUrl(url: string): boolean
+declare function neverProxied(url: string): boolean
+declare function routedThrough(via: RouteInfo | null | undefined, c: ContainerConfig, cookieStoreId: string): boolean
 declare function probeTraversed(via: { host?: string, port?: number } | null | undefined, c: ContainerConfig | undefined): boolean
 declare function usableProxy(c: ContainerConfig | undefined): boolean
 declare const R: {
@@ -106,6 +122,8 @@ declare const R: {
   PROXY_DOWN: string
   NOT_VERIFIED: string
   MISROUTED: string
+  REROUTED: string
+  CHECK_TAKEN: string
   ERROR: string
   OK: string
 }
@@ -137,12 +155,14 @@ declare var fmt: {
   explainDetail(detail: string | undefined, custom?: boolean): string
   rawDetail(detail: string | undefined, custom?: boolean): string
   reasonLabel(reason: string): string
+  rerouteText(via: string): string
+  REROUTED_PILL: string
   flagSrc(cc: string): string
   relayTags(r: Relay): string[]
   exitName(c: ContainerConfig): string
   tunnelSuspect(containers: Record<string, { custom?: boolean, health?: string }>, id: string): boolean
   tunnelHint(st: { containers: Record<string, { custom?: boolean, health?: string, healthAt?: number }>, relays: { offline: { cookieStoreId: string }[] } }, id: string, downAt: number | undefined, rechecked: boolean): boolean
-  blockedNext(reason: string, st: { ready: boolean, containers: Record<string, { health?: string }> }, id: string, wasManaged: boolean): { next: 'wait' | 'go' | 'back' | 'stop', show: string }
+  blockedNext(reason: string, st: { ready: boolean, containers: Record<string, { health?: string }>, reroutedTabs?: Record<string, { id: string }> }, id: string, wasManaged: boolean, tabId?: number, shown?: string, moved?: boolean): { next: 'wait' | 'go' | 'back' | 'stop', show: string }
   nameList(names: string[]): string
   usedBy(assigned: Map<string, string[]>, names: Record<string, string>): Record<string, string[]>
 }
@@ -173,6 +193,10 @@ interface StateSnapshot {
   blockLog: BlockEntry[]
   relays: { ts: number, source: string, count: number, offline: OfflineAssignment[] }
   renamed: Record<string, string>
+  /** Where another proxy last took a container's request, '' for no proxy */
+  rerouted: Record<string, { via: string, at: number }>
+  /** The same, per tab, for the popup and the blocked page */
+  reroutedTabs: Record<string, { id: string, via: string, at: number, main: boolean }>
   /** Context names as the badge titles them; filled a beat after hydrate */
   names: Record<string, string>
   privateAllowed: boolean

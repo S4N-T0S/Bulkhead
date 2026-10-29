@@ -24,7 +24,8 @@
     up: 'Protected',
     down: 'Blocked — server down',
     misrouted: 'Blocked — wrong exit',
-    unknown: 'Blocked — checking'
+    unknown: 'Blocked — checking',
+    taken: 'Blocked — another proxy'
   })
 
   /** @param {string | undefined} health @returns {string} */
@@ -109,6 +110,8 @@
     'proxy-down': 'Server not answering',
     'proxy-unverified': 'Server not checked yet',
     'misrouted': 'Came out at the wrong server',
+    'rerouted': 'Another proxy took over',
+    'check-taken': 'Another proxy took the check',
     // Bulkhead's own startup, not the browser's: the same state shows up on
     // a plain extension reload, when Firefox never restarted.
     'not-ready': 'Bulkhead was still starting',
@@ -122,6 +125,17 @@
   function reasonLabel (reason) {
     return REASON_LABEL[reason] || reason
   }
+
+  // lower case: it follows "Blocked — " in the badge title
+  /** @param {string} via host:port, or '' when the request had no proxy at all @returns {string} */
+  function rerouteText (via) {
+    return via
+      ? `another proxy (${via}) tried to take this tab's traffic`
+      : 'another proxy setting tried to send this tab\'s traffic direct'
+  }
+
+  // the pill for an exit that checks out while another proxy holds the route
+  const REROUTED_PILL = HEALTH_LABEL.taken
 
   // What to call an exit in prose: relays by hostname, the tunnel endpoint
   // by its role, custom exits by whatever the user named them.
@@ -169,16 +183,19 @@
   // What a blocked page does with a fresh snapshot. A page opened while the
   // gate was only waiting -- on its settings, or on a check -- follows the
   // exit and continues the navigation by itself; one opened on a failure
-  // only ever reports the recovery.
+  // only reports the recovery, unless its screen has since moved on.
   /**
    * @param {string} reason what the gate opened the page with
-   * @param {{ ready: boolean, containers: Record<string, { health?: string }> }} st
+   * @param {{ ready: boolean, containers: Record<string, { health?: string }>, reroutedTabs?: Record<string, { id: string }> }} st
    * @param {string} id
    * @param {boolean} wasManaged the page has already seen a server set here
+   * @param {number} [tabId] the page's own tab: a takeover is per tab
+   * @param {string} [shown] the reason on screen
+   * @param {boolean} [moved] the screen has left the reason the page opened with
    * @returns {{ next: 'wait' | 'go' | 'back' | 'stop', show: string }} show
    *   is the reason to display instead, or '' to leave the page as it is
    */
-  function blockedNext (reason, st, id, wasManaged) {
+  function blockedNext (reason, st, id, wasManaged, tabId, shown, moved) {
     // an assignment list that has not been read yet says nothing
     if (!st.ready) return { next: 'wait', show: '' }
     const c = Object.hasOwn(st.containers, id) ? st.containers[id] : undefined
@@ -188,13 +205,26 @@
       // loading the page bare is not the page's call.
       return { next: reason === 'not-ready' && !wasManaged ? 'go' : 'stop', show: '' }
     }
-    const waiting = reason === 'not-ready' || reason === 'proxy-unverified'
+    // the gate would block again while another proxy holds this tab's route
+    const tabs = st.reroutedTabs || {}
+    const key = String(tabId)
+    const held = tabId !== undefined && Object.hasOwn(tabs, key) && tabs[key].id === id
+    if (c.health === 'up' && held) return { next: 'wait', show: 'rerouted' }
+    // a page whose screen has moved on to a failed check promised, like a
+    // waiting page, to load once one passes
+    const waiting = reason === 'not-ready' || reason === 'proxy-unverified' || reason === 'check-taken'
+      || (moved === true && shown !== 'rerouted')
     if (c.health === 'up') return { next: waiting ? 'go' : 'back', show: '' }
-    if (!waiting) return { next: 'wait', show: '' }
+    // A takeover page whose exit has since failed says so, rather than going
+    // on calling the server fine. So does any page once another proxy holds
+    // the checks: its own advice no longer fits.
+    if (!waiting && reason !== 'rerouted' && shown !== 'rerouted' && c.health !== 'taken') return { next: 'wait', show: '' }
     // the same reading of health the gate makes
     return {
       next: 'wait',
-      show: c.health === 'unknown' ? 'proxy-unverified' : c.health === 'misrouted' ? 'misrouted' : 'proxy-down'
+      show: c.health === 'unknown'
+        ? 'proxy-unverified'
+        : c.health === 'misrouted' ? 'misrouted' : c.health === 'taken' ? 'check-taken' : 'proxy-down'
     }
   }
 
@@ -226,7 +256,7 @@
     return Object.fromEntries([...assigned].map(([host, ids]) => [host, ids.map(id => names[id] || 'another container')]))
   }
 
-  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, flagSrc, relayTags, exitName, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy }
+  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, rerouteText, REROUTED_PILL, flagSrc, relayTags, exitName, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

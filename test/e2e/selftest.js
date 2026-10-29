@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT */
+/* global state, blockLog, lastBlockedPage, rerouted, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT */
 
 ;(() => {
   /** @param {string} line */
@@ -255,6 +255,118 @@
       t(`J recheck autohealed=${autohealed} health=${defC() && defC().health}`)
     }
     await unassign('firefox-default')
+
+    // A listener registered after Bulkhead's (MAC with a proxy on the same
+    // container) takes tab traffic while the tab-less probe still passes.
+    /** @param {string} [host] @returns {Promise<number>} */
+    const carried = async (host = 'example.com') => {
+      const hits = await (await fetch(`http://127.0.0.1:${TEST_CANARY_PORT}/foreign-hits`)).json()
+      return hits.filter((/** @type {string} */ h) => h === host).length
+    }
+    const takeIdent = await browser.contextualIdentities.create({ name: 'bulkhead-takeover', color: 'orange', icon: 'circle' })
+    const takeId = takeIdent.cookieStoreId
+    const takeCx = await saveCustomExit({ label: 'e2e takeover', host: '127.0.0.1', port: TEST_SOCKS_PORT })
+    await assign(takeId, `custom:${takeCx.id}`)
+    if (!await waitFor(() => Boolean(state.containers[takeId] && state.containers[takeId].health === 'up'), 60000)) {
+      t(`FAIL K exit never verified: ${JSON.stringify(state.containers[takeId])}`)
+    }
+    /** @type {'proxy' | 'null' | ''} */
+    let late = 'proxy'
+    // the default context's tabs too, for the stack case below; never its
+    // tab-less requests, which include this page's own
+    let lateDefault = false
+    // and, for the probe case, the tab-less check itself
+    let lateProbe = false
+    /** @param {browser.proxy._OnRequestDetails} d */
+    const lateListener = (d) => {
+      const mine = d.cookieStoreId === takeId || (lateDefault && d.cookieStoreId === 'firefox-default' && d.tabId >= 0)
+        || (lateProbe && d.tabId === -1 && d.url.includes('am.i.mullvad.net'))
+      if (!mine || !late) return undefined
+      return late === 'null' ? null : { type: 'socks', host: '127.0.0.1', port: TEST_FOREIGN_PORT, proxyDNS: true }
+    }
+    browser.proxy.onRequest.addListener(lateListener, { urls: ['<all_urls>'] })
+    const takeBefore = await carried()
+    const takeTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-takeover', cookieStoreId: takeId, active: false })
+    await sleep(5000)
+    const takeHit = blockLog.find(b => b.container === takeId && b.url.includes('bulkhead-takeover'))
+    t(`K takeover blocked=${Boolean(takeHit)} reason=${takeHit ? takeHit.reason : 'NONE-LEAKED'} outcome=${outcomeOf('bulkhead-takeover')}`)
+    t(`K takeover carried=${await carried() - takeBefore}`)
+    await waitFor(() => Boolean(lastBlockedPage && lastBlockedPage.container === takeId), 6000)
+    t(`K takeover blockedpage shown=${Boolean(lastBlockedPage && lastBlockedPage.container === takeId && lastBlockedPage.reason === 'rerouted')}`)
+    // the exit itself is fine, and the flag is what tells the popup otherwise
+    t(`K takeover health=${state.containers[takeId] && state.containers[takeId].health} flagged=${rerouted.has(Number(takeTab.id))}`)
+    // null strips the proxy outright: a direct connection, the worse case
+    late = 'null'
+    const stripTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-stripped', cookieStoreId: takeId, active: false })
+    await sleep(5000)
+    const stripHit = blockLog.find(b => b.container === takeId && b.url.includes('bulkhead-stripped'))
+    t(`K stripped blocked=${Boolean(stripHit)} reason=${stripHit ? stripHit.reason : 'NONE-LEAKED'} completed=${outcomeOf('bulkhead-stripped') === 'completed'} outcome=${outcomeOf('bulkhead-stripped')}`)
+    // The check is routed by token and carries no tab, so a listener that
+    // takes every tab-less request takes it too: it must be stopped before
+    // it connects, and the container must say why it could not be checked,
+    // without a log entry for every check.
+    late = 'proxy'
+    lateProbe = true
+    const probeBefore = await carried('am.i.mullvad.net')
+    await probe(takeId)
+    const probed = state.containers[takeId]
+    t(`K probe taken health=${probed && probed.health} carried=${await carried('am.i.mullvad.net') - probeBefore} logged=${blockLog.some(b => b.url.includes('am.i.mullvad.net'))} said=${Boolean(probed && /took the check/.test(probed.healthDetail || ''))}`)
+    lateProbe = false
+    await probe(takeId)
+    await waitFor(() => Boolean(state.containers[takeId] && state.containers[takeId].health === 'up'), 20000)
+    // A blocked page that continues by itself -- here one waiting on a fresh
+    // exit's check -- runs straight into the takeover. The second blocked
+    // page must replace the first, or Back lands on the one that continues.
+    // Run in the default context: getViews cannot see an extension page in
+    // a container tab.
+    late = 'proxy'
+    lateDefault = true
+    await assign('firefox-default', `custom:${takeCx.id}`)
+    const stackTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-stack', active: false })
+    await waitFor(() => blockLog.some(b => b.url.includes('bulkhead-stack') && b.reason === 'rerouted'), 20000)
+    await sleep(1500)
+    const stackView = browser.extension.getViews({ type: 'tab' })
+      .find(w => w.location.pathname.endsWith('/blocked/blocked.html') && w.location.search.includes('bulkhead-stack'))
+    const stackReasons = blockLog.filter(b => b.url.includes('bulkhead-stack')).map(b => b.reason).reverse().join(',')
+    t(`K stack depth=${stackView ? stackView.history.length : 'no-page'} reasons=${stackReasons}`)
+    lateDefault = false
+    if (stackTab.id !== undefined) await browser.tabs.remove(stackTab.id).catch(() => null)
+    await unassign('firefox-default')
+    // and once the other proxy lets go, the tab works again, and loading a
+    // page on the right route clears its flag
+    late = ''
+    if (takeTab.id !== undefined) await browser.tabs.update(takeTab.id, { url: 'https://example.com/?bulkhead-released' })
+    await sleep(6000)
+    t(`K released passed=${outcomeOf('bulkhead-released') === 'completed'} flagged=${rerouted.has(Number(takeTab.id))} outcome=${outcomeOf('bulkhead-released')}`)
+    browser.proxy.onRequest.removeListener(lateListener)
+    for (const tab of [takeTab, stripTab]) {
+      if (tab.id !== undefined) await browser.tabs.remove(tab.id).catch(() => null)
+    }
+    await unassign(takeId)
+    await browser.contextualIdentities.remove(takeId).catch(() => null)
+
+    // One registered before Bulkhead's sits behind its exit as Firefox's
+    // failover instead. The exit dies while still marked up: the next page
+    // must fail on the refusal and take the exit down, not quietly load
+    // through the other proxy.
+    const fallIdent = await browser.contextualIdentities.create({ name: 'bulkhead-fallback', color: 'yellow', icon: 'circle' })
+    const fallId = fallIdent.cookieStoreId
+    globalThis.testForeignFirst.add(fallId)
+    const fallCx = await saveCustomExit({ label: 'e2e fallback', host: '127.0.0.1', port: TEST_EXIT_PORT })
+    await assign(fallId, `custom:${fallCx.id}`)
+    if (!await waitFor(() => Boolean(state.containers[fallId] && state.containers[fallId].health === 'up'), 60000)) {
+      t(`FAIL L exit never verified: ${JSON.stringify(state.containers[fallId])}`)
+    }
+    await fetch(`http://127.0.0.1:${TEST_CANARY_PORT}/kill-exit`)
+    const fallBefore = await carried()
+    const fallTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-fallback', cookieStoreId: fallId, active: false })
+    await sleep(6000)
+    const fallC = state.containers[fallId]
+    t(`L fallback carried=${await carried() - fallBefore} completed=${outcomeOf('bulkhead-fallback') === 'completed'} health=${fallC && fallC.health} outcome=${outcomeOf('bulkhead-fallback')}`)
+    globalThis.testForeignFirst.clear()
+    if (fallTab.id !== undefined) await browser.tabs.remove(fallTab.id).catch(() => null)
+    await unassign(fallId)
+    await browser.contextualIdentities.remove(fallId).catch(() => null)
 
     if (TEST_TUNNEL) {
       // The same server a relay assignment would use, typed in by hand.

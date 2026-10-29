@@ -22,6 +22,10 @@ Concretely:
 - Making `proxy.onRequest` return `direct`, or an unusable `ProxyInfo`, for a
   context that has an exit assigned.
 - Traffic from one container leaving via another container's exit.
+- The gate allowing a managed context's request onto any route but its
+  exit: another extension's proxy, a failover proxy, or none. Loopback and
+  cache-only loads, which never get a route, are exempt, and so are
+  Mozilla's own sites (see the README's Limits).
 - A health check that is credited to an exit which did not carry it: a
   reply obtained through a system proxy, a failover hop or a direct
   connection counting as proof that the assigned exit is working.
@@ -34,9 +38,10 @@ signs releases.
 
 ## Out of scope
 
-- The limits documented in the README under "Limits": a second proxy
-  behind the assigned exit, DoH, requests issued before the background page is
-  running, and the extension being disabled.
+- The limits documented in the README under "Limits": requests that
+  find an exit dead, DoH, requests issued before the background page is
+  running, Mozilla's own sites, other extensions' DNS lookups, a Firefox
+  launched outside the tunnel, and the extension being disabled.
   Those are known and stated; a report that restates them isn't a finding,
   though a report that makes one of them *worse than documented* is.
 - Anything requiring an already-compromised browser profile or physical

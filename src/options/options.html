@@ -41,8 +41,7 @@
         <p class="sub">
           Defence in depth. As of Firefox 154 a failed container exit does not fall back to a
           direct connection for ordinary page loads, but that gating has changed between
-          versions and this is one line to set. If you have a system or PAC proxy configured,
-          a failed exit falls through to <em>that</em> proxy; the exit check catches it.
+          versions and this is one line to set.
         </p>
       </div>
       <div class="pref well">
@@ -75,9 +74,9 @@
       <details>
         <summary class="sub">What Bulkhead can't protect you from</summary>
         <ul class="sub">
-          <li>A system-wide or company proxy catching a failed container. That is what the first
-            setting above is for.</li>
-          <li>All your containers sharing one DNS provider. That is what the second is for.</li>
+          <li>Pages on addons.mozilla.org and other sites Firefox hides from extensions. Bulkhead
+            routes them through the container's server, but can't block them.</li>
+          <li>All your containers sharing one DNS provider. That is what the second setting above is for.</li>
           <li>Bulkhead being switched off, crashed or uninstalled. Nothing protects you then.</li>
           <li>Anything that leaves Firefox entirely: other browsers, apps, your operating system.</li>
         </ul>

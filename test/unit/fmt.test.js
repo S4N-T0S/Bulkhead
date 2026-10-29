@@ -2,7 +2,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  timeAgo, healthLabel, healthClass, explainDetail, rawDetail, flagSrc, relayTags, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy
+  timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, rerouteText, flagSrc, relayTags, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy
 } = require('../../src/ui/fmt.js')
 const { decide } = require('../../src/decide.js')
 
@@ -24,7 +24,7 @@ test('timeAgo covers every bucket and its boundaries', () => {
 
 test('every blocking state says so in words, not just in colour', () => {
   assert.equal(healthLabel('up'), 'Protected')
-  for (const h of ['down', 'misrouted', 'unknown']) {
+  for (const h of ['down', 'misrouted', 'unknown', 'taken']) {
     assert.match(healthLabel(h), /^Blocked/, h)
   }
   assert.equal(healthLabel(undefined), 'Not protected')
@@ -35,11 +35,12 @@ test('an unrecognised health value fails loud rather than reassuring', () => {
   // (grey, sounds inert) or worse as "Protected"
   const fallback = healthLabel('weird')
   assert.match(fallback, /^Blocked/)
-  for (const h of ['up', 'down', 'misrouted', 'unknown']) {
+  for (const h of ['up', 'down', 'misrouted', 'unknown', 'taken']) {
     assert.notEqual(fallback, healthLabel(h), 'must not borrow a known label')
   }
   assert.equal(healthClass('weird'), 'down')
   assert.equal(healthClass('misrouted'), 'misrouted')
+  assert.equal(healthClass('taken'), 'taken')
   assert.equal(healthClass(undefined), 'off')
 })
 
@@ -118,6 +119,9 @@ test('tunnelSuspect needs every Mullvad exit down, and a Mullvad exit to ask abo
   assert.equal(tunnelSuspect({ a: down, b: { health: 'up' } }, 'a'), false)
   assert.equal(tunnelSuspect({ a: down, b: { health: 'unknown' } }, 'a'), false)
   assert.equal(tunnelSuspect({ a: down, b: { health: 'misrouted' } }, 'a'), false)
+  // a taken check is another extension, not the tunnel
+  assert.equal(tunnelSuspect({ a: down, b: { health: 'taken' } }, 'a'), false)
+  assert.equal(tunnelSuspect({ a: { health: 'taken' } }, 'a'), false)
   assert.equal(tunnelSuspect({ a: { health: 'unknown' } }, 'a'), false)
   // custom exits are not in the tunnel and say nothing about it
   assert.equal(tunnelSuspect({ a: down, b: { custom: true, health: 'up' } }, 'a'), true)
@@ -158,8 +162,8 @@ test('tunnelHint waits for the exit to fail again before blaming the tunnel', ()
   assert.equal(tunnelHint(st(at), '__proto__', at, true), false)
 })
 
-const REASONS = ['not-ready', 'proxy-unverified', 'proxy-down', 'misrouted', 'no-proxy', 'error', 'unattributed', 'speculative', 'unknown', '']
-const WAITING = ['not-ready', 'proxy-unverified']
+const REASONS = ['not-ready', 'proxy-unverified', 'check-taken', 'proxy-down', 'misrouted', 'no-proxy', 'error', 'unattributed', 'speculative', 'unknown', '']
+const WAITING = ['not-ready', 'proxy-unverified', 'check-taken']
 
 test('blockedNext continues a page that was only waiting, and nothing else', () => {
   /** @param {string} [health] @param {boolean} [ready] */
@@ -191,6 +195,7 @@ test('blockedNext continues a page that was only waiting, and nothing else', () 
     // a failed check is shown for what it is, and the page keeps waiting
     assert.deepEqual(next(waiting, st('down')), { next: 'wait', show: 'proxy-down' }, waiting)
     assert.deepEqual(next(waiting, st('misrouted')), { next: 'wait', show: 'misrouted' }, waiting)
+    assert.deepEqual(next(waiting, st('taken')), { next: 'wait', show: 'check-taken' }, waiting)
   }
 
   // opened on a failure: report the recovery, leave the loading to a click
@@ -199,6 +204,9 @@ test('blockedNext continues a page that was only waiting, and nothing else', () 
     for (const h of ['down', 'misrouted', 'unknown']) {
       assert.deepEqual(next(failed, st(h)), { next: 'wait', show: '' }, `${failed}/${h}`)
     }
+    // its advice is about the server, and another proxy holding the checks
+    // is not that
+    assert.deepEqual(next(failed, st('taken')), { next: 'wait', show: 'check-taken' }, failed)
   }
 
   // inherited keys are not containers
@@ -208,7 +216,7 @@ test('blockedNext continues a page that was only waiting, and nothing else', () 
 
 test('blockedNext never continues while a managed exit is not up', () => {
   for (const reason of REASONS) {
-    for (const health of ['down', 'misrouted', 'unknown', undefined, 'nonsense']) {
+    for (const health of ['down', 'misrouted', 'unknown', 'taken', undefined, 'nonsense']) {
       for (const ready of [true, false]) {
         for (const managed of [true, false]) {
           const out = blockedNext(reason, { ready, containers: { a: { health } } }, 'a', managed)
@@ -219,8 +227,73 @@ test('blockedNext never continues while a managed exit is not up', () => {
   }
 })
 
+test('blockedNext never continues into a route another proxy holds', () => {
+  // The exit checks out the whole time, so health alone would read as
+  // recovered; the gate would block the page again on arrival.
+  const held = { 7: { id: 'a', via: '127.0.0.1:9050', at: 1 } }
+  for (const reason of [...REASONS, 'rerouted']) {
+    for (const managed of [true, false]) {
+      assert.deepEqual(blockedNext(reason, { ready: true, containers: { a: { health: 'up' } }, reroutedTabs: held }, 'a', managed, 7),
+        { next: 'wait', show: 'rerouted' }, `${reason}/${managed}`)
+    }
+  }
+  // a takeover is per tab: another tab's, or another container's, is not this page's
+  const up = { ready: true, containers: { a: { health: 'up' } } }
+  assert.equal(blockedNext('proxy-unverified', { ...up, reroutedTabs: held }, 'a', false, 8).next, 'go')
+  assert.equal(blockedNext('proxy-unverified', { ...up, reroutedTabs: { 7: { id: 'b' } } }, 'a', false, 7).next, 'go')
+  assert.equal(blockedNext('proxy-unverified', { ...up, reroutedTabs: held }, 'a', false).next, 'go')
+})
+
+test('blockedNext stops calling the server fine once it fails', () => {
+  // a page opened on one failure that came to show a takeover follows the
+  // exit from there
+  const down = { ready: true, containers: { a: { health: 'down' } }, reroutedTabs: {} }
+  assert.deepEqual(blockedNext('proxy-down', down, 'a', true, 7, 'rerouted'), { next: 'wait', show: 'proxy-down' })
+  assert.deepEqual(blockedNext('proxy-down', down, 'a', true, 7, 'proxy-down'), { next: 'wait', show: '' })
+})
+
+test('blockedNext lets a takeover page go once the takeover is over', () => {
+  /** @param {string} health */
+  const st = health => ({ ready: true, containers: { a: { health } }, reroutedTabs: {} })
+  // the other proxy let go: offered, never automatic
+  assert.deepEqual(blockedNext('rerouted', st('up'), 'a', true), { next: 'back', show: '' })
+  // the exit has failed since: say so rather than keep calling it fine
+  assert.deepEqual(blockedNext('rerouted', st('down'), 'a', true), { next: 'wait', show: 'proxy-down' })
+  assert.deepEqual(blockedNext('rerouted', st('unknown'), 'a', true), { next: 'wait', show: 'proxy-unverified' })
+  assert.deepEqual(blockedNext('rerouted', st('misrouted'), 'a', true), { next: 'wait', show: 'misrouted' })
+  assert.deepEqual(blockedNext('rerouted', st('taken'), 'a', true), { next: 'wait', show: 'check-taken' })
+  // still showing the takeover when the exit came back: still a click
+  assert.deepEqual(blockedNext('rerouted', st('up'), 'a', true, 7, 'rerouted'), { next: 'back', show: '' })
+  assert.equal(blockedNext('rerouted', { ready: true, containers: {} }, 'a', true).next, 'stop')
+})
+
+test('a takeover page that went on to show a failed check loads once one passes', () => {
+  // its screen said so; the gate decides again on arrival either way
+  const up = { ready: true, containers: { a: { health: 'up' } }, reroutedTabs: {} }
+  for (const shown of ['proxy-down', 'proxy-unverified', 'misrouted', 'check-taken']) {
+    assert.deepEqual(blockedNext('rerouted', up, 'a', true, 7, shown, true), { next: 'go', show: '' }, shown)
+    // not while this tab's route is still held
+    const held = { ...up, reroutedTabs: { 7: { id: 'a' } } }
+    assert.deepEqual(blockedNext('rerouted', held, 'a', true, 7, shown, true), { next: 'wait', show: 'rerouted' }, shown)
+  }
+  // a failure page that showed a takeover, then its own failure again: the
+  // screen promised a load the whole way
+  assert.deepEqual(blockedNext('proxy-down', up, 'a', true, 7, 'proxy-down', true), { next: 'go', show: '' })
+  // one that never moved keeps reporting the recovery only
+  assert.deepEqual(blockedNext('proxy-down', up, 'a', true, 7, 'proxy-down', false), { next: 'back', show: '' })
+  assert.deepEqual(blockedNext('proxy-down', up, 'a', true, 7, 'rerouted', true), { next: 'back', show: '' })
+  assert.equal(reasonLabel('check-taken'), 'Another proxy took the check')
+})
+
+test('rerouteText is past tense, and names the other route', () => {
+  assert.match(rerouteText('127.0.0.1:9050'), /another proxy \(127\.0\.0\.1:9050\) tried to take this tab's traffic/)
+  assert.match(rerouteText(''), /tried to send this tab's traffic direct/)
+  assert.doesNotMatch(rerouteText('x:1') + rerouteText(''), /is sending/)
+  assert.equal(reasonLabel('rerouted'), 'Another proxy took over')
+})
+
 test('blockedNext shows a waiting page the reason the gate would give', () => {
-  for (const health of ['down', 'misrouted', 'unknown', 'nonsense', undefined]) {
+  for (const health of ['down', 'misrouted', 'unknown', 'taken', 'nonsense', undefined]) {
     const containers = { a: { ip: '10.124.0.1', port: 1080, health } }
     const gate = decide(
       /** @type {any} */ ({ ready: true, strict: true, containers, probeTokens: new Set() }),

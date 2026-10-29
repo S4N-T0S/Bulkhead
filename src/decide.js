@@ -26,6 +26,11 @@
     // failed would be false, and it is the most-seen state in daily use.
     NOT_VERIFIED: 'proxy-unverified',
     MISROUTED: 'misrouted',
+    // The exit checks out, but this request is not on it: another proxy
+    // took over the route.
+    REROUTED: 'rerouted',
+    // The exit could not be checked at all: another proxy took the check.
+    CHECK_TAKEN: 'check-taken',
     ERROR: 'error',
     OK: 'ok'
   }
@@ -81,13 +86,10 @@
   }
 
   // Whether the proxy Firefox reports having carried a request is the one
-  // the assignment asks for. A refused SOCKS connection is failed over, and
-  // that failover ends at a direct connection while
-  // network.proxy.failover_direct is true -- which answers with a perfectly
-  // good 200 from the user's own address. Reachability alone therefore
-  // proves nothing about the proxy; this is what proves it. Firefox echoes
-  // back the ProxyInfo it was given, so compare hostnames the way hostnames
-  // compare.
+  // the assignment asks for. Reachability alone proves nothing: a check
+  // carried anywhere else, a direct connection included, answers a perfectly
+  // good 200. Firefox echoes back the ProxyInfo it was given, so compare
+  // hostnames the way hostnames compare.
   /**
    * @param {{ host?: string, port?: number } | null | undefined} via
    * @param {ContainerConfig | undefined} c
@@ -96,6 +98,40 @@
   function probeTraversed (via, c) {
     if (!via || !c || typeof via.host !== 'string') return false
     return via.host.toLowerCase() === String(c.ip).toLowerCase() && via.port === (c.port || 1080)
+  }
+
+  // Names Firefox never hands to a proxy under default prefs
+  // (network.proxy.allow_hijacking_localhost): loopback, plus *.localhost,
+  // which it resolves to loopback itself. A request to one arrives at the
+  // gate with no proxy at all, however the container is routed. Wider than
+  // isLoopbackUrl on purpose -- this decides only whether a missing route is
+  // suspicious, never whether to open a blocked container.
+  /** @param {string} url @returns {boolean} */
+  function neverProxied (url) {
+    if (isLoopbackUrl(url)) return true
+    try {
+      return /\.localhost\.?$/.test(new URL(url).hostname)
+    } catch {
+      return false
+    }
+  }
+
+  // Whether the proxy Firefox will use for a request is this container's
+  // exit, exactly as the router built it. Firefox runs every extension's
+  // proxy.onRequest in turn and the last answer wins, so the route
+  // webRequest reports is the final one. Same server is not enough: an
+  // answer without remote DNS sends every name to the local resolver, and
+  // the isolation key is the container's own, which nothing else has reason
+  // to set.
+  /**
+   * @param {RouteInfo | null | undefined} via
+   * @param {ContainerConfig} c
+   * @param {string} cookieStoreId
+   * @returns {boolean}
+   */
+  function routedThrough (via, c, cookieStoreId) {
+    return Boolean(via && via.type === 'socks' && via.proxyDNS === true
+      && via.connectionIsolationKey === cookieStoreId && probeTraversed(via, c))
   }
 
   // Whether a stored assignment can actually be routed. Both listeners must
@@ -118,15 +154,21 @@
    * @returns {Verdict}
    */
   function decide (state, req) {
-    // 0. The health probe must never be blocked; if it were, a container
-    //    marked down could never be observed recovering and the killswitch
-    //    would latch shut for good. Only a token this session issued and
-    //    still holds counts, and only towards the probe endpoint -- the bare
-    //    marker is forgeable by any web page, and a request carrying an
-    //    unrecognised token gets no special treatment anywhere, so forging
-    //    one cannot open the gate or dodge the proxy.
+    // 0. The health probe must never be blocked by health; if it were, a
+    //    container marked down could never be observed recovering and the
+    //    killswitch would latch shut for good. Only a token this session
+    //    issued and still holds counts, and only towards the probe endpoint
+    //    -- the bare marker is forgeable by any web page, and a request
+    //    carrying an unrecognised token gets no special treatment anywhere,
+    //    so forging one cannot open the gate or dodge the proxy. Its route
+    //    is still checked against the container it is checking: a probe
+    //    another proxy took, or sent direct, would leak and vouch for
+    //    nothing.
     const token = probeToken(req.url)
     if (token && state.probeTokens.has(token) && isProbeUrl(req.url)) {
+      const target = req.probeFor
+      const pc = typeof target === 'string' && Object.hasOwn(state.containers, target) ? state.containers[target] : undefined
+      if (!pc || !routedThrough(req.proxyInfo, pc, /** @type {string} */ (target))) return v(BLOCK, R.REROUTED)
       return v(ALLOW, R.PROBE)
     }
 
@@ -135,22 +177,24 @@
     //    when a pile of tabs reloads at once. Fail closed through it.
     if (!state.ready) return v(BLOCK, R.NOT_READY)
 
+    const id = req.cookieStoreId
+    const known = typeof id === 'string' && id !== ''
+    const c = known ? state.containers[id] : undefined
+
     // 2. Loopback, once the user has opted in. Sits above the speculative
     //    and unattributed rules on purpose: whoever issued this request, its
     //    destination is this machine, and blocking it breaks every sign-in
     //    flow that hands a token to an app listening on a local port. After
     //    the ready check, so the toggle is only honoured once it has
-    //    actually been read.
-    if (state.allowLocal === true && isLoopbackUrl(req.url)) return v(ALLOW, R.LOOPBACK)
+    //    actually been read. In a managed container only with no proxy on
+    //    it: the router strips any there, so one there was put back by
+    //    someone else.
+    if (state.allowLocal === true && isLoopbackUrl(req.url) && (req.proxyInfo == null || !c)) return v(ALLOW, R.LOOPBACK)
 
     // 3. Speculative connections carry unreliable tab information, so their
     //    cookieStoreId cannot be trusted. Strict mode refuses to route them
     //    on a guess.
     if (req.type === 'speculative' && state.strict) return v(BLOCK, R.SPECULATIVE)
-
-    const id = req.cookieStoreId
-    const known = typeof id === 'string' && id !== ''
-    const c = known ? state.containers[id] : undefined
 
     // 4. A container we manage. Deliberately checked before the strict-mode
     //    branches, so relaxing strict can never re-open a container whose
@@ -165,8 +209,25 @@
       if (c.health !== 'up') {
         if (c.health === 'misrouted') return v(BLOCK, R.MISROUTED)
         if (c.health === 'unknown') return v(BLOCK, R.NOT_VERIFIED)
+        if (c.health === 'taken') return v(BLOCK, R.CHECK_TAKEN)
         return v(BLOCK, R.PROXY_DOWN)
       }
+
+      // A verified exit says nothing about this request's route. Another
+      // proxy extension registered after this one can swap in its own proxy,
+      // or answer null and strip the proxy altogether -- a direct connection
+      // from a container the popup calls protected. Probes never see it:
+      // they carry no tab, and extensions that route by tab leave them
+      // alone.
+      //
+      // No proxy at all is a strip only if the router gave the request one.
+      // Firefox asks for no route for a load it will serve from cache alone,
+      // and never hands loopback to a proxy; neither leaves the machine.
+      const via = req.proxyInfo
+      const offRoute = via == null
+        ? req.routed === true && !neverProxied(req.url)
+        : !routedThrough(via, c, /** @type {string} */ (id))
+      if (offRoute) return v(BLOCK, R.REROUTED)
       return v(ALLOW, R.OK)
     }
 
@@ -185,7 +246,7 @@
     return { verdict, reason }
   }
 
-  const api = { decide, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
+  const api = { decide, probeToken, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

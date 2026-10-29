@@ -164,7 +164,7 @@ input[type="text"], input[type="search"], input[type="number"], input[type="pass
 }
 .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .pill.up { color: var(--ok); background: var(--ok-bg); }
-.pill.down, .pill.misrouted, .pill.error { color: var(--bad); background: var(--bad-bg); }
+.pill.down, .pill.misrouted, .pill.taken, .pill.error { color: var(--bad); background: var(--bad-bg); }
 .pill.unknown { color: var(--warn); background: var(--warn-bg); }
 .pill.off { color: var(--muted); background: var(--well); }
 

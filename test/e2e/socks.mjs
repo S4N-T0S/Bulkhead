@@ -22,8 +22,16 @@ function parseConnect (buf) {
   return { host, port: buf.readUInt16BE(off) }
 }
 
-export function socksServer () {
-  return net.createServer((sock) => {
+/**
+ * @param {(target: { host: string, port: number }) => void} [onConnect] sees
+ *   every destination this listener is asked to carry
+ */
+export function socksServer (onConnect) {
+  /** @type {Set<net.Socket>} */
+  const live = new Set()
+  const server = net.createServer((sock) => {
+    live.add(sock)
+    sock.on('close', () => live.delete(sock))
     sock.on('error', () => {})
     sock.once('data', () => {
       sock.write(Buffer.from([0x05, 0x00]))
@@ -33,6 +41,7 @@ export function socksServer () {
           sock.end()
           return
         }
+        if (onConnect) onConnect(target)
         const up = net.connect(target.port, target.host, () => {
           sock.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]))
           sock.pipe(up)
@@ -42,5 +51,13 @@ export function socksServer () {
         sock.on('close', () => up.destroy())
       })
     })
+  })
+  // Stop listening and drop every open connection, so the port refuses
+  // outright instead of a kept-alive connection carrying on.
+  return Object.assign(server, {
+    kill () {
+      server.close()
+      for (const s of live) s.destroy()
+    }
   })
 }

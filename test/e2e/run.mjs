@@ -30,6 +30,7 @@ await rm(buildDir, { recursive: true, force: true })
 await mkdir(buildDir, { recursive: true })
 await cp(join(root, 'src'), buildDir, { recursive: true })
 await cp(join(root, 'test', 'e2e', 'selftest.js'), join(buildDir, 'selftest.js'))
+await cp(join(root, 'test', 'e2e', 'foreign-first.js'), join(buildDir, 'foreign-first.js'))
 // A canary on loopback, so the loopback case can assert a request actually
 // arrived rather than merely going unblocked. Bound to 127.0.0.1, so nothing
 // is exposed off the machine.
@@ -38,6 +39,9 @@ const canaryHits = []
 const canary = createServer((req, res) => {
   canaryHits.push(String(req.url))
   res.writeHead(200, { 'content-type': 'text/plain' })
+  // the selftest's levers on the two listeners below
+  if (req.url === '/kill-exit') exit.kill()
+  if (req.url === '/foreign-hits') return res.end(JSON.stringify(foreignHits))
   res.end('ok')
 })
 await new Promise(r => canary.listen(0, '127.0.0.1', r))
@@ -49,12 +53,26 @@ const socks = socksServer()
 await new Promise(r => socks.listen(0, '127.0.0.1', r))
 const socksPort = /** @type {{ port: number }} */ (socks.address()).port
 
+// A foreign proxy that records what it carries, and an exit the selftest
+// can kill while it is still marked up.
+/** @type {string[]} */
+const foreignHits = []
+const foreign = socksServer(target => foreignHits.push(target.host))
+await new Promise(r => foreign.listen(0, '127.0.0.1', r))
+const foreignPort = /** @type {{ port: number }} */ (foreign.address()).port
+const exit = socksServer()
+await new Promise(r => exit.listen(0, '127.0.0.1', r))
+const exitPort = /** @type {{ port: number }} */ (exit.address()).port
+
 await writeFile(join(buildDir, 'test-config.js'),
-  `globalThis.TEST_TUNNEL = ${tunnel}\nglobalThis.TEST_CANARY_PORT = ${canaryPort}\nglobalThis.TEST_SOCKS_PORT = ${socksPort}\n`)
+  `globalThis.TEST_TUNNEL = ${tunnel}\nglobalThis.TEST_CANARY_PORT = ${canaryPort}\nglobalThis.TEST_SOCKS_PORT = ${socksPort}\n`
+  + `globalThis.TEST_FOREIGN_PORT = ${foreignPort}\nglobalThis.TEST_EXIT_PORT = ${exitPort}\n`)
 
 const manifestPath = join(buildDir, 'manifest.json')
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
-manifest.background.scripts = [...manifest.background.scripts, 'test-config.js', 'selftest.js']
+// foreign-first.js has to register its proxy listener before background.js
+// does, the way an extension that loaded earlier would
+manifest.background.scripts = ['foreign-first.js', ...manifest.background.scripts, 'test-config.js', 'selftest.js']
 await writeFile(manifestPath, JSON.stringify(manifest, null, 2))
 
 const args = [
@@ -107,6 +125,13 @@ child.on('exit', () => {
 function killTree () {
   if (process.platform === 'win32') {
     spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    // Firefox's launcher process starts the browser and exits, so the browser
+    // is not in that tree; find it by the profile web-ext made for it
+    const m = lines.map(l => l.match(/Running Firefox with profile at (.+?)[\\/]?$/)).find(Boolean)
+    if (m) {
+      const ps = `Get-CimInstance Win32_Process -Filter "Name='firefox.exe'" | Where-Object { $_.CommandLine -like '*${m[1].replace(/'/g, '\'\'')}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`
+      spawnSync('powershell.exe', ['-NoProfile', '-Command', ps], { stdio: 'ignore' })
+    }
   } else {
     try {
       process.kill(-child.pid, 'SIGINT')
@@ -149,6 +174,15 @@ function evaluate () {
     '[test] J recheck healed=true',
     '[test] J recheck rearmed=true',
     '[test] J recheck autohealed=true',
+    '[test] K takeover blocked=true reason=rerouted',
+    '[test] K takeover carried=0',
+    '[test] K takeover blockedpage shown=true',
+    '[test] K takeover health=up flagged=true',
+    '[test] K stack depth=1 reasons=proxy-unverified,rerouted',
+    '[test] K stripped blocked=true reason=rerouted completed=false',
+    '[test] K probe taken health=taken carried=0 logged=false said=true',
+    '[test] K released passed=true flagged=false',
+    '[test] L fallback carried=0 completed=false health=down',
     '[test] E race notup=true'
   ]
   // the tunnel run raises exactly one offline warning, so pinning the total
@@ -176,6 +210,8 @@ function evaluate () {
   }
   canary.close()
   socks.close()
+  foreign.kill()
+  exit.kill()
   if (!canaryHits.some(u => u.includes('bulkhead-loopon'))) {
     console.error('e2e: the loopback canary was never reached — the opt-in case proved nothing')
     lines.push('[test] FAIL loopback canary never reached')

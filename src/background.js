@@ -8,20 +8,15 @@
 // How long Firefox ignores this proxy after it fails -- a blacklist
 // duration, not a grace period (nsIProtocolProxyService: "the length of time
 // (in seconds) to ignore this proxy if this proxy fails"; MDN describes it
-// wrongly). Every second here is a second of skipping SOCKS and taking the
-// failover path, which ends at DIRECT while network.proxy.failover_direct is
-// true. Keep it at the floor so the proxy is reconsidered immediately and
-// the gate, not the blacklist, decides what happens.
+// wrongly). socksInfo leaves no failover path, so a blacklisted exit is
+// tried again regardless. The floor keeps any proxy reconsidered
+// immediately, so the gate, not the blacklist, decides what happens.
 const FAILOVER_SECONDS = 1
 
 const PROBE_TIMEOUT_MS = 10000
-// A check that was not carried by its own server is re-run once before any
-// verdict, after Firefox's failover blacklist has lapsed. One failed
-// connection anywhere -- an ordinary tab request, a neighbouring probe in a
-// re-check-all burst -- blacklists that proxy for FAILOVER_SECONDS, and a
-// probe resolved inside the window is silently carried elsewhere. That says
-// something about the last second, not about the server; only a mis-carry
-// that repeats after the window is evidence worth convicting on.
+// A check that did not travel its own server, or came out at another, is
+// re-run once a moment later, past FAILOVER_SECONDS, before any verdict.
+// Only a mis-carry that repeats is evidence worth convicting on.
 const RECHECK_DELAY_MS = FAILOVER_SECONDS * 1000 + 1000
 const RELAY_TTL_MS = 24 * 60 * 60 * 1000
 // Mullvad's in-tunnel SOCKS endpoint: exits at whatever server the app is
@@ -82,6 +77,10 @@ const probeTargets = new Map()
 // only this says "through the server it was supposed to".
 /** @type {Map<string, { host: string, port: number } | null>} */
 const probeRoute = new Map()
+// tokens of checks the gate stopped as off their route, so probe() can tell
+// a taken check from a dead server
+/** @type {Set<string>} */
+const probeStopped = new Set()
 // cookieStoreId -> the config fingerprint being probed, so a result that
 // lands after the assignment changed can be recognised and discarded
 /** @type {Map<string, string>} */
@@ -147,6 +146,9 @@ async function hydrate () {
     for (const id of Object.keys(renamed)) {
       if (!(id in containers) || stale.includes(id)) delete renamed[id]
     }
+    for (const [tabId, r] of rerouted) {
+      if (!(r.id in containers) || stale.includes(r.id)) rerouted.delete(tabId)
+    }
     for (const id of names.keys()) {
       if (!(id in containers)) names.delete(id)
     }
@@ -202,7 +204,7 @@ browser.proxy.onRequest.addListener((d) => {
       // If the target vanished mid-probe, send the request nowhere rather
       // than direct: a probe that escapes to the real connection is the
       // leak, and an unroutable proxy fails it closed instead.
-      return usableProxy(c) ? socksInfo(c, target) : UNROUTABLE
+      return usableProxy(c) ? socksInfo(c, target) : [UNROUTABLE, null]
     }
     // Unrecognised token: treat the request like any other. Giving it any
     // shortcut would let a web page opt out of the proxy by pasting the
@@ -212,31 +214,53 @@ browser.proxy.onRequest.addListener((d) => {
   // to proxy loopback anyway (network.proxy.allow_hijacking_localhost), so
   // this mostly states intent -- but on a profile that flipped that pref, a
   // 127.0.0.1 request would otherwise be handed to a SOCKS server and told
-  // "connect to yourself". Direct to loopback cannot leave the machine.
-  if (state.allowLocal && isLoopbackUrl(d.url)) return { type: 'direct' }
+  // "connect to yourself". In a managed container, null rather than
+  // direct: direct keeps an earlier listener's proxy, and a sign-in
+  // callback carries a code. Anywhere else another proxy on loopback is not
+  // Bulkhead's call.
   const id = d.cookieStoreId
   const c = id ? state.containers[id] : undefined
+  if (state.allowLocal && isLoopbackUrl(d.url)) return c ? null : { type: 'direct' }
   // Same validity test the gate uses. If these two ever disagree, a config
   // the gate allows can produce an invalid ProxyInfo, and Firefox answers
   // that with a direct connection.
   if (!id || !usableProxy(c)) return { type: 'direct' }
+  noteRouted(d.requestId)
   return socksInfo(/** @type {ContainerConfig} */ (c), id)
 }, { urls: ['<all_urls>'] })
+
+// Requests the router gave an exit, for the gate's route check (see
+// decide.js); the ids are the ones webRequest sees. Kept until the request
+// ends, not for a fixed time: an entry gone early would let a stripped
+// request through. The cap is only for ids that never end.
+/** @type {Set<string>} */
+const routedIds = new Set()
+const ROUTED_CAP = 20000
+
+/** @param {string} requestId */
+function noteRouted (requestId) {
+  routedIds.delete(requestId)
+  routedIds.add(requestId)
+  // insertion order is age order, so the oldest goes first
+  if (routedIds.size > ROUTED_CAP) routedIds.delete(/** @type {string} */ (routedIds.values().next().value))
+}
+
+browser.webRequest.onCompleted.addListener(d => routedIds.delete(d.requestId), { urls: ['<all_urls>'] })
 
 // A syntactically valid SOCKS proxy that cannot resolve, so a request routed
 // here fails hard instead of falling through. .invalid is reserved by
 // RFC 2606 and never resolves.
 const UNROUTABLE = { type: 'socks', host: 'bulkhead.invalid', port: 1, proxyDNS: true, failoverTimeout: 1 }
 
-// Deliberately not appended to the ProxyInfo below as a failover tail.
-// Measured on 154 with network.proxy.failover_direct=true: a refused SOCKS
-// proxy ends the request at NS_ERROR_PROXY_CONNECTION_REFUSED, not at a
-// direct connection, so a tail buys nothing there -- and it costs. With one
-// appended, the same failure arrives as NS_ERROR_ABORT: the specific error
-// is what onErrorOccurred matches to trip health instantly, and what tells
-// the user their server refused rather than "something went wrong".
+// The list ends in null, which Firefox reads as "no failover". Without it,
+// whatever proxy was in place before this listener ran -- a system or PAC
+// proxy, or another extension's -- becomes the exit's failover, and a
+// refused exit is quietly retried through it. Measured on 142 and 160: with
+// the null, a refused exit fails with NS_ERROR_PROXY_CONNECTION_REFUSED,
+// the error onErrorOccurred trips health on. A real proxy as the tail
+// turns that into NS_ERROR_ABORT.
 
-/** @param {ContainerConfig} c @param {string} cookieStoreId */
+/** @param {ContainerConfig} c @param {string} cookieStoreId @returns {[Record<string, unknown>, null]} */
 function socksInfo (c, cookieStoreId) {
   /** @type {Record<string, unknown>} */
   const info = {
@@ -258,44 +282,55 @@ function socksInfo (c, cookieStoreId) {
     info.username = c.username
     info.password = c.password || ''
   }
-  return info
+  return [info, null]
 }
 
 // Gate: the killswitch. Blocking listener, fires after the router, and its
 // cancel wins -- this is the sole authority on what passes.
 browser.webRequest.onBeforeRequest.addListener((d) => {
+  const token = probeToken(d.url)
+  const probing = Boolean(token && probeTargets.has(token) && isProbeUrl(d.url))
+  // Route bookkeeping runs on every attempt at the probe endpoint, allowed
+  // or not; should Firefox retry one, the last route seen wins. Firefox
+  // attaches proxyInfo only to a proxied request, so its absence means
+  // direct. Not in the type definitions; the API is Gecko-only.
+  if (probing) {
+    const via = /** @type {{ proxyInfo?: { type: string, host: string, port: number } }} */ (d).proxyInfo
+    probeRoute.set(/** @type {string} */ (token), via && via.type !== 'direct' ? { host: via.host, port: via.port } : null)
+  }
   let out
   try {
-    out = decide(state, d)
+    out = decide(state, {
+      ...d,
+      routed: routedIds.has(d.requestId),
+      probeFor: probing ? probeTargets.get(/** @type {string} */ (token)) : undefined
+    })
   } catch (e) {
     // A bug in the decision path must fail closed, not open.
     out = { verdict: 'block', reason: R.ERROR }
     log('[bulkhead] decide threw:', String(e))
   }
   if (out.verdict === 'allow') {
-    const token = probeToken(d.url)
-    // Route bookkeeping runs on every attempt at the probe endpoint, not
-    // just the first. A proxy that refuses is retried down Firefox's
-    // failover list -- a system proxy, then a direct connection -- and each
-    // retry arrives here again, by which time the token below has been
-    // burned and this is an ordinary allow. It is the attempt that finally
-    // completed whose route the verdict has to be judged against, so the
-    // last one seen wins. Firefox attaches proxyInfo only to a request
-    // actually being proxied, so its absence means direct. Not in the type
-    // definitions; the API is Gecko-only.
-    if (token && probeTargets.has(token) && isProbeUrl(d.url)) {
-      const via = /** @type {{ proxyInfo?: { type: string, host: string, port: number } }} */ (d).proxyInfo
-      probeRoute.set(token, via && via.type !== 'direct' ? { host: via.host, port: via.port } : null)
-    }
     // Burn the token on use: proxy.onRequest has already taken its copy from
     // probeTargets, so the round trip is unaffected. What this closes is
     // replay of an observed token by anything else.
     if (out.reason === R.PROBE && token) state.probeTokens.delete(token)
+    // a page that went out on its own exit: whatever took this tab's route
+    // over has let go of it
+    const routed = /** @type {{ proxyInfo?: RouteInfo | null }} */ (d).proxyInfo
+    if (out.reason === R.OK && d.type === 'main_frame' && routed && rerouted.delete(d.tabId)) {
+      log(`[bulkhead] ${d.cookieStoreId}: tab ${d.tabId} back on its own exit`)
+      updateAllBadges()
+    }
     return {}
   }
 
   log(`[bulkhead] BLOCKED ${out.reason} ${d.type} ${String(d.url).slice(0, 100)}`)
-  recordBlock(d, out.reason)
+  // a taken check already shows on its container, and one every 30 s would
+  // push real blocks out of the list
+  if (!probing) recordBlock(d, out.reason)
+  else if (out.reason === R.REROUTED) probeStopped.add(/** @type {string} */ (token))
+  if (out.reason === R.REROUTED) noteReroute(d)
 
   // A bare cancel renders a blank network-error page, which teaches people
   // to ignore failures. Drive top-level documents to the explainer page
@@ -307,11 +342,65 @@ browser.webRequest.onBeforeRequest.addListener((d) => {
       container: d.cookieStoreId || '',
       url: d.url
     })
-    const url = browser.runtime.getURL('blocked/blocked.html') + '?' + q.toString()
-    browser.tabs.update(d.tabId, { url }).catch(() => null)
+    const page = browser.runtime.getURL('blocked/blocked.html')
+    // Sent from a blocked page -- its retry, or one that continued on its
+    // own -- and blocked again: replace that page rather than stack another
+    // on top, or Back lands on the old one and it tries again.
+    const again = String(d.originUrl || '').startsWith(page)
+    browser.tabs.update(d.tabId, { url: `${page}?${q.toString()}`, loadReplace: again }).catch(() => null)
   }
   return { cancel: true }
 }, { urls: ['<all_urls>'] }, ['blocking'])
+
+// tabId -> the latest takeover seen in that tab: via is '' for no proxy,
+// main means the page itself was stopped and a blocked page is showing.
+// Per tab, since a proxy may match some sites only, and beside health
+// rather than in it, since the exit still checks out. Display only. Tab-less
+// requests are blocked but only logged.
+/** @type {Map<number, { id: string, via: string, at: number, main: boolean }>} */
+const rerouted = new Map()
+
+/** @param {{ tabId: number, type: string, cookieStoreId?: string, proxyInfo?: RouteInfo | null }} d */
+function noteReroute (d) {
+  const id = d.cookieStoreId
+  // a speculative connection's route says little; never raise the alarm on one
+  if (!id || d.tabId < 0 || d.type === 'speculative') return
+  const p = d.proxyInfo
+  const via = p && p.type !== 'direct' ? `${p.host}:${p.port}` : ''
+  const prev = rerouted.get(d.tabId)
+  rerouted.set(d.tabId, { id, via, at: Date.now(), main: d.type === 'main_frame' })
+  if (!prev || prev.id !== id || prev.via !== via) {
+    log(`[bulkhead] ${id}: another proxy took over tab ${d.tabId} (${via || 'no proxy'})`)
+    updateAllBadges()
+  }
+  // an unload beacon can outlive its tab, and onRemoved has gone by then
+  browser.tabs.get(d.tabId).catch(() => {
+    if (rerouted.delete(d.tabId)) updateAllBadges()
+  })
+}
+
+// The latest takeover seen in a container, from any of its tabs.
+/** @param {string} id @returns {{ via: string, at: number } | undefined} */
+function reroutedIn (id) {
+  let last
+  for (const r of rerouted.values()) {
+    if (r.id === id && (!last || r.at > last.at)) last = r
+  }
+  return last && { via: last.via, at: last.at }
+}
+
+/** @param {string} id */
+function clearReroutes (id) {
+  let any = false
+  for (const [tabId, r] of rerouted) {
+    if (r.id === id) any = rerouted.delete(tabId) || any
+  }
+  if (any) updateAllBadges()
+}
+
+browser.tabs.onRemoved.addListener((tabId) => {
+  if (rerouted.delete(tabId)) updateAllBadges()
+})
 
 /** @param {{ url: string, type: string, cookieStoreId?: string }} d @param {string} reason */
 function recordBlock (d, reason) {
@@ -325,6 +414,7 @@ function recordBlock (d, reason) {
 }
 
 browser.webRequest.onErrorOccurred.addListener((d) => {
+  routedIds.delete(d.requestId)
   // A probe travels the proxy of the container it is checking, but it is
   // issued by this page, so it arrives here labelled firefox-default.
   // probe() draws its own conclusion from the failure; charging it here as
@@ -341,9 +431,9 @@ browser.webRequest.onErrorOccurred.addListener((d) => {
     // event is the request's container, and the request may have been
     // carried by a different exit entirely: a probe for another container
     // whose token was already swept up by the time the event landed (the
-    // fetch settles first when the race falls that way), or a failover
-    // attempt through some other proxy. Blaming this container's exit for
-    // one of those took a healthy exit down for a refusal it never issued.
+    // fetch settles first when the race falls that way). Blaming this
+    // container's exit for that took a healthy exit down for a refusal it
+    // never issued.
     // proxyInfo names the proxy that actually failed, so the instant
     // verdict is reserved for a failure of this container's own exit;
     // anything else gets the check instead, which rides that exit and
@@ -389,7 +479,7 @@ async function probe (id) {
   state.probeTokens.add(token)
   // When this probe began, which is what recheck() judges a repeat by: the
   // connection is made at the start of the fetch, so only the start says
-  // whether it could still have fallen inside the failover blacklist.
+  // whether it began inside the recheck window.
   const startedAt = Date.now()
 
   try {
@@ -404,22 +494,20 @@ async function probe (id) {
     // computed against the old config says nothing about the new one.
     if (relaylib.configKey(state.containers[id]) !== key) return
 
-    // Which proxy carried this, before anything is read out of the answer. A
-    // refused SOCKS connection is failed over, and while
-    // network.proxy.failover_direct is true that failover ends at a direct
-    // connection -- which answers, with a 200, from the user's own address.
-    // Taking that as proof the server is alive would leave a dead exit
-    // certified healthy and every request in the container leaving bare.
-    // A Mullvad exit has a second line of defence in the hostname compare
+    // Which proxy carried this, before anything is read out of the answer.
+    // socksInfo leaves no failover list, but a check carried anywhere else,
+    // down to a direct connection, answers with a 200 all the same. Taking
+    // that as proof the server is alive would leave a dead exit certified
+    // healthy and every request in the container leaving bare.
+    // A Mullvad exit has another line of defence in the hostname compare
     // below; a custom exit has none, so this check is what stands in for it.
     const via = probeRoute.get(token)
     if (!probeTraversed(via, c)) {
-      // Carried by something else entirely -- another proxy in Firefox's
-      // failover list, or nothing at all. That is a misroute in the plainest
-      // sense, whatever the exit itself is doing, so it gets the state whose
-      // label and advice already fit: wrong exit, pick another. First time
-      // through it gets the recheck instead: the likeliest cause is the
-      // failover blacklist, and 'unknown' blocks while the retry settles it.
+      // Behind the gate, which already stops a check off its route. A check
+      // carried by something else, or by nothing at all, is a misroute in
+      // the plainest sense, so it gets the state whose label and advice
+      // already fit: wrong exit, pick another. First time through it gets the
+      // recheck instead, and 'unknown' blocks while the retry settles it.
       if (recheck(id, key, startedAt, 'The last check did not travel this server. Checking again.')) return
       delete renamed[id]
       markHealth(id, via ? 'misrouted' : 'down', via
@@ -472,6 +560,12 @@ async function probe (id) {
     }
   } catch (e) {
     if (relaylib.configKey(state.containers[id]) !== key) return
+    // A check the gate stopped says nothing about the server, and the fix is
+    // in the other extension.
+    if (probeStopped.has(token)) {
+      markHealth(id, 'taken', 'Turn off any proxy another extension sets for all of Firefox or for requests outside containers. It took the check meant for this server.')
+      return
+    }
     // The marker means "this mis-carry had its look", and a server that has
     // since failed outright makes the next mis-carry a new event, not a
     // repeat. Left standing through the outage, the marker would convict a
@@ -481,6 +575,7 @@ async function probe (id) {
   } finally {
     probeTargets.delete(token)
     probeRoute.delete(token)
+    probeStopped.delete(token)
     state.probeTokens.delete(token)
     if (probesInFlight.get(id) === key) probesInFlight.delete(id)
     const now = state.containers[id]
@@ -491,16 +586,15 @@ async function probe (id) {
 
 // The second look a mis-carried check gets, and the only one. True means
 // the caller must return without a verdict: health is parked at 'unknown'
-// -- which blocks, so a proxy that really is failing over to direct leaks
-// nothing while the answer is pending -- and the same config is probed
-// again once the failover blacklist cannot be the explanation any more.
-// False means this config already had its look, from a probe that began
-// after the window, and whatever the caller saw is real.
+// -- which blocks, so nothing leaks while the answer is pending -- and the
+// same config is probed again a moment later. False means this config
+// already had its look, from a probe that began after the window, and
+// whatever the caller saw is real.
 //
 // Judged on when the probe began, not on the marker alone: the parked
 // container can be probed again at any moment -- a popup click, a stale
 // timer -- and a probe that began inside the window would otherwise convict
-// on the same blacklist event the park was for.
+// on the same moment the park was for.
 /** @param {string} id @param {string} key @param {number} startedAt @param {string} detail @returns {boolean} */
 function recheck (id, key, startedAt, detail) {
   const prev = rechecked.get(id)
@@ -568,6 +662,13 @@ function convicted (health) {
   return health === 'down' || health === 'misrouted'
 }
 
+// A verdict, or a check another proxy took: either way the container is
+// blocked for a reason other tabs should hear about.
+/** @param {Health | undefined} health @returns {boolean} */
+function failing (health) {
+  return convicted(health) || health === 'taken'
+}
+
 /** @returns {boolean} */
 function relayStillDown () {
   return Object.values(state.containers).some(o => Boolean(o.socksHost) && convicted(o.health))
@@ -588,14 +689,18 @@ function markHealth (id, health, detail, exitIp) {
   if (prev !== health) {
     log(`[bulkhead] ${id}: ${prev} -> ${health} (${detail})`)
     if (health === 'up') rechecked.delete(id)
+    // A takeover flag means something only while the exit checks out. Kept
+    // past it, a blocked page that has since promised to load would meet it
+    // on recovery and stop; the gate decides again on arrival anyway.
+    if (prev === 'up') clearReroutes(id)
     // A relay failing, or one recovering while another still fails: the two
     // moments a retired server would show.
     if (c.socksHost && convicted(health) && !convicted(prev)) refreshRelaysOnFailure(false)
     else if (c.socksHost && health === 'up' && relayStillDown()) refreshRelaysOnFailure(true)
   }
-  // A verdict changes the hint on every other tab; a new detail for the same
-  // verdict only changes this container's own title.
-  if (convicted(prev) !== convicted(health)) updateAllBadges()
+  // A verdict or a taken check changes the hint on every other tab; a new
+  // detail for the same state only changes this container's own title.
+  if (failing(prev) !== failing(health)) updateAllBadges()
   else updateBadgesFor(id)
 }
 
@@ -685,7 +790,13 @@ function badgeTab (tab) {
   let color = '#5b6674'
   let title = 'Bulkhead'
 
-  if (c && c.health === 'up') {
+  const own = rerouted.get(tab.id)
+  const reroute = c && c.health === 'up' && own && own.id === tab.cookieStoreId ? own : undefined
+  if (reroute) {
+    text = '!'
+    color = '#c50042'
+    title = `Blocked — ${fmt.rerouteText(reroute.via)}`
+  } else if (c && c.health === 'up') {
     // the check can be ten minutes old, so say when it was
     const where = c.custom
       ? fmt.exitName(c)
@@ -700,7 +811,7 @@ function badgeTab (tab) {
     text = '!'
     color = '#c50042'
     const why = fmt.explainDetail(c.healthDetail, c.custom)
-    title = `Blocked — ${c.health === 'misrouted' ? 'wrong exit' : 'server down'}. ${why}`.trim()
+    title = `Blocked — ${c.health === 'misrouted' ? 'wrong exit' : c.health === 'taken' ? 'another proxy' : 'server down'}. ${why}`.trim()
   } else if (managing) {
     // managed elsewhere, but not here -- say so rather than look identical
     // to a verified tab
@@ -710,9 +821,11 @@ function badgeTab (tab) {
 
   // The badge is per tab, so a container whose only tab is in the background
   // would fail without a trace. Every other tab names it instead.
-  const elsewhere = Object.keys(state.containers)
-    .filter(id => id !== tab.cookieStoreId && convicted(state.containers[id].health))
-  if (elsewhere.length && !(c && convicted(c.health))) {
+  const elsewhere = Object.keys(state.containers).filter((id) => {
+    const h = state.containers[id].health
+    return id !== tab.cookieStoreId && (failing(h) || (h === 'up' && reroutedIn(id) !== undefined))
+  })
+  if (elsewhere.length && !(c && (failing(c.health) || reroute))) {
     title += ` · blocked elsewhere: ${elsewhere.map(id => names.get(id) || id).join(', ')}`
     if (text === '·') color = '#c50042'
   }
@@ -1176,6 +1289,12 @@ async function getState () {
     },
     privateAllowed,
     renamed: { ...renamed },
+    // per container for the settings page, per tab for the popup and the
+    // blocked page
+    rerouted: Object.fromEntries(Object.keys(state.containers)
+      .map(id => [id, reroutedIn(id)])
+      .filter(([, r]) => r !== undefined)),
+    reroutedTabs: Object.fromEntries([...rerouted].map(([tabId, r]) => [tabId, { id: r.id, via: r.via, at: r.at, main: r.main }])),
     names: Object.fromEntries(names),
     prefsAck: s.prefsAck === true,
     recents: Array.isArray(s.recents) ? s.recents : [],
@@ -1209,6 +1328,8 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
       return assign(msg.cookieStoreId, msg.host)
     case 'unassign':
       return unassign(msg.cookieStoreId)
+    // A passing check leaves the takeover flags alone: it carries no tab, so
+    // it cannot see a takeover. A page loading on the exit clears them.
     case 'probe':
       await probe(msg.cookieStoreId)
       return { ok: true }

@@ -9,6 +9,8 @@
 
   /** @type {string} */
   let cookieStoreId = 'firefox-default'
+  /** @type {number | undefined} */
+  let tabId
   /** @type {{ cookieStoreId: string, name: string, colorCode: string } | null} */
   let identity = null
   /** @type {StateSnapshot | null} */
@@ -24,6 +26,7 @@
   async function init () {
     const [tab] = await browser.tabs.query({ active: true, currentWindow: true })
     cookieStoreId = tab?.cookieStoreId || 'firefox-default'
+    tabId = tab?.id
     if (cookieStoreId.startsWith('firefox-container-')) {
       identity = await browser.contextualIdentities.get(cookieStoreId).catch(() => null)
       // a container tab whose identity cannot be read still has a routable
@@ -52,9 +55,11 @@
     const line = !snapshot.ready
       ? 'Bulkhead is starting up. All traffic is blocked until it finishes.'
       : c
-        ? c.health === 'up'
-          ? `${who}: protected via ${fmt.exitName(c)}.`
-          : `${who}: ${fmt.healthLabel(c.health)}. Nothing is being sent direct.`
+        ? reroutedHere(c)
+          ? `${who}: blocked, another proxy tried to take this tab's traffic.`
+          : c.health === 'up'
+            ? `${who}: protected via ${fmt.exitName(c)}.`
+            : `${who}: ${fmt.healthLabel(c.health)}. Nothing is being sent direct.`
         : `${who}: not protected. Traffic uses your ordinary connection.`
     if (line === announced) return
     announced = line
@@ -63,6 +68,15 @@
   }
 
   let picking = false
+
+  // This tab's own takeover, and only while the exit itself checks out;
+  // otherwise health already blocks and says why.
+  /** @param {ContainerConfig} c */
+  function reroutedHere (c) {
+    if (!snapshot || c.health !== 'up' || tabId === undefined) return undefined
+    const r = Object.hasOwn(snapshot.reroutedTabs || {}, String(tabId)) ? snapshot.reroutedTabs[String(tabId)] : undefined
+    return r && r.id === cookieStoreId ? r : undefined
+  }
 
   function renderMain () {
     if (!snapshot) return
@@ -186,10 +200,11 @@
 
   /** @param {ContainerConfig} c */
   function renderManaged (c) {
+    const reroute = reroutedHere(c)
     const head = containerRow()
     const pill = document.createElement('span')
-    pill.className = `pill ${fmt.healthClass(c.health)}`
-    pill.textContent = fmt.healthLabel(c.health)
+    pill.className = `pill ${reroute ? 'down' : fmt.healthClass(c.health)}`
+    pill.textContent = reroute ? fmt.REROUTED_PILL : fmt.healthLabel(c.health)
     head.append(pill)
     view.append(head)
 
@@ -245,6 +260,13 @@
           note.append(code)
         }
       }
+      view.append(note)
+    }
+    if (reroute) {
+      const note = document.createElement('div')
+      note.className = 'banner danger'
+      const what = fmt.rerouteText(reroute.via)
+      note.textContent = `Turn the other proxy off for this container, then ${reroute.main ? 'press Try again on the page' : 'reload the page'}. ${what[0].toUpperCase()}${what.slice(1)}, and Bulkhead stopped it.`
       view.append(note)
     }
 

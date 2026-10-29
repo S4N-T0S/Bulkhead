@@ -44,7 +44,7 @@ export default [
   },
   {
     // run as background scripts inside the e2e builds, not under node
-    files: ['test/e2e/selftest.js', 'test/e2e/transition-selftest.js'],
+    files: ['test/e2e/selftest.js', 'test/e2e/transition-selftest.js', 'test/e2e/foreign-first.js'],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'script',

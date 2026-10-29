@@ -109,6 +109,7 @@
     if (health === 'up') return 'It still answers, so traffic is flowing for now.'
     if (health === 'unknown') return 'Its traffic is blocked while the check runs.'
     if (health === 'misrouted') return 'Its traffic is blocked: it came out at the wrong server.'
+    if (health === 'taken') return 'Its traffic is blocked: another proxy took its check.'
     return listed ? 'Its traffic stays blocked until you move it.' : 'It is not answering, so its traffic is blocked.'
   }
 
@@ -280,17 +281,23 @@
       if (isPrivate && !snapshot.privateAllowed && !c) exitCell.textContent = '—'
 
       const statusCell = tr.insertCell()
+      // the exit checks out, but another proxy tried to take a tab's route
+      const reroute = c && c.health === 'up' && Object.hasOwn(snapshot.rerouted || {}, ident.cookieStoreId)
+        ? snapshot.rerouted[ident.cookieStoreId]
+        : undefined
       const pill = document.createElement('span')
-      pill.className = `pill ${fmt.healthClass(c && c.health)}`
-      pill.textContent = fmt.healthLabel(c && c.health)
+      pill.className = `pill ${reroute ? 'down' : fmt.healthClass(c && c.health)}`
+      pill.textContent = reroute ? fmt.REROUTED_PILL : fmt.healthLabel(c && c.health)
       statusCell.append(pill)
       if (c) {
         const sub = document.createElement('span')
         sub.className = 'sub'
-        const ago = fmt.timeAgo(c.healthAt, Date.now())
-        const why = c.health === 'up'
-          ? (c.exitIp ? `exit ${c.exitIp}` : '')
-          : fmt.explainDetail(c.healthDetail, c.custom)
+        const ago = fmt.timeAgo(reroute ? reroute.at : c.healthAt, Date.now())
+        const why = reroute
+          ? `Turn the other proxy off, then reload the affected tab. ${reroute.via ? `Another proxy (${reroute.via}) tried to take its traffic.` : 'Another proxy setting tried to send its traffic direct.'} The server checks out.`
+          : c.health === 'up'
+            ? (c.exitIp ? `exit ${c.exitIp}` : '')
+            : fmt.explainDetail(c.healthDetail, c.custom)
         sub.textContent = [why, ago].filter(Boolean).join(' · ')
         statusCell.append(sub)
         const raw = c.health === 'up' ? '' : fmt.rawDetail(c.healthDetail, c.custom)

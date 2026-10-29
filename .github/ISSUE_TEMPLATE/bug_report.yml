@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         If this is a way to make traffic escape its assigned exit, please
-        report it privately instead — Security → Report a vulnerability.
+        report it privately instead: Security → Report a vulnerability.
 
   - type: textarea
     id: what

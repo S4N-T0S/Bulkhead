@@ -73,6 +73,7 @@ const url = `${base}/${artifact.split('/').map(encodeURIComponent).join('/')}`
 // under it aborts the process on Windows -- which turned a successful setup
 // into a failed one.
 if (await exists(marker)) {
+  await disableUpdates()
   await writeCurrent()
   console.log(`firefox ${channel} ${version} already present: ${binary}`)
 } else {
@@ -99,6 +100,7 @@ async function install () {
   }
 
   await rm(tmp, { force: true })
+  await disableUpdates()
   await writeFile(marker, '')
   await writeCurrent()
   console.log(`ready: ${binary}`)
@@ -167,6 +169,14 @@ function extract (archive, dest) {
     const tar = spawnSync('tar', ['-xJf', archive, '-C', dest], { stdio: 'inherit' })
     if (tar.status !== 0) throw new Error('tar extraction failed')
   }
+}
+
+// Otherwise Firefox updates itself in place
+async function disableUpdates () {
+  const policyDir = join(dirname(binary), 'distribution')
+  await mkdir(policyDir, { recursive: true })
+  await writeFile(join(policyDir, 'policies.json'),
+    JSON.stringify({ policies: { DisableAppUpdate: true } }, null, 2) + '\n')
 }
 
 async function writeCurrent () {

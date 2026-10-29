@@ -10,7 +10,7 @@
     "url": "https://github.com/S4N-T0S/Bulkhead.git"
   },
   "engines": {
-    "node": ">=22.13"
+    "node": ">=24"
   },
   "scripts": {
     "setup": "node tools/get-firefox.mjs",

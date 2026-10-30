@@ -20,6 +20,11 @@ const buildDir = join(root, '.cache', 'e2e-src')
 // ends the run early surfaces as MISSING lines for whatever case happened
 // to be last, which points the blame at the wrong place entirely.
 const timeoutMs = Number(process.env.E2E_TIMEOUT_MS) || 300_000
+// listed through a test pref, so no downloaded lists are needed; a reserved
+// name, so nothing ever answers for it
+const TRACKER = 'tracker.bulkhead.example'
+// the local exit carries this one to the canary
+const REDIRECTOR = 'redirect.bulkhead.example'
 
 const firefox = await firefoxBinary()
 const tunnel = await detectTunnel()
@@ -38,6 +43,25 @@ await cp(join(root, 'test', 'e2e', 'foreign-first.js'), join(buildDir, 'foreign-
 const canaryHits = []
 const canary = createServer((req, res) => {
   canaryHits.push(String(req.url))
+  if (String(req.url).startsWith('/to-tracker')) {
+    res.writeHead(302, { location: `http://${TRACKER}${req.url}?bulkhead-tracker` })
+    return res.end()
+  }
+  // trackers for tracking protection to cancel. Images reach the gate behind
+  // the router on a busy page. Scripts and stylesheets are sent ahead of it,
+  // so behind a redirect they still hold the first hop's route. Websockets
+  // queue per host, which puts the gate well after their first router call.
+  if (req.url === '/tracker-page') {
+    res.writeHead(200, { 'content-type': 'text/html' })
+    const direct = [...Array(6).keys()].map(i => `<img src="https://${TRACKER}/i${i}.gif?bulkhead-tracker">`).join('')
+    const redirected = [...Array(3).keys()].map(i => `<script src="http://${REDIRECTOR}/to-tracker${i}"></script><link rel="stylesheet" href="http://${REDIRECTOR}/to-tracker-css${i}">`).join('')
+    return res.end(`<!doctype html><body>${direct}${redirected}<script>for (let i = 0; i < 4; i++) new WebSocket('wss://${TRACKER}/' + i + '?bulkhead-tracker-ws').onerror = () => null</script>`)
+  }
+  // subresources for another proxy to strip, enough that a few miss the tie
+  if (req.url === '/strip-page') {
+    res.writeHead(200, { 'content-type': 'text/html' })
+    return res.end(`<!doctype html><body>${[...Array(12).keys()].map(i => `<img src="https://strip.bulkhead.example/${i}.gif?bulkhead-strip-sub">`).join('')}`)
+  }
   res.writeHead(200, { 'content-type': 'text/plain' })
   // the selftest's levers on the two listeners below
   if (req.url === '/kill-exit') exit.kill()
@@ -49,7 +73,7 @@ const canaryPort = /** @type {{ port: number }} */ (canary.address()).port
 
 // A local SOCKS exit that actually works, for the cases that need a healthy
 // custom assignment with or without a tunnel.
-const socks = socksServer()
+const socks = socksServer(undefined, t => t.host === REDIRECTOR ? { host: '127.0.0.1', port: canaryPort } : t)
 await new Promise(r => socks.listen(0, '127.0.0.1', r))
 const socksPort = /** @type {{ port: number }} */ (socks.address()).port
 
@@ -89,7 +113,9 @@ const args = [
   '--pref=browser.dom.window.dump.enabled=true',
   '--pref=devtools.console.stdout.chrome=true',
   '--pref=network.proxy.failover_direct=false',
-  '--pref=network.trr.mode=5'
+  '--pref=network.trr.mode=5',
+  '--pref=privacy.trackingprotection.enabled=true',
+  `--pref=urlclassifier.trackingTable.testEntries=${TRACKER}`
 ]
 
 const child = spawn(process.execPath, args, {
@@ -180,9 +206,12 @@ function evaluate () {
     '[test] K takeover health=up flagged=true',
     '[test] K stack depth=1 reasons=proxy-unverified,rerouted',
     '[test] K stripped blocked=true reason=rerouted completed=false',
+    '[test] K stripped sub flagged=true completed=0',
     '[test] K probe taken health=taken carried=0 logged=false said=true',
     '[test] K released passed=true flagged=false',
     '[test] L fallback carried=0 completed=false health=down',
+    '[test] K flood kept=true swept=true',
+    '[test] M tracker early=true completed=false logged=false flagged=false ws=NS_ERROR_ABORT',
     '[test] E race notup=true'
   ]
   // the tunnel run raises exactly one offline warning, so pinning the total

@@ -53,6 +53,9 @@ interface GateRequest {
   proxyInfo?: RouteInfo | null
   /** The router gave this request an exit */
   routed?: boolean
+  /** When it routed this hop, on timeStamp's clock; Infinity if it has not yet */
+  routedAt?: number
+  timeStamp?: number
   /** For a live probe, the container it is checking */
   probeFor?: string
 }
@@ -123,6 +126,7 @@ declare const R: {
   NOT_VERIFIED: string
   MISROUTED: string
   REROUTED: string
+  PRE_ROUTE: string
   CHECK_TAKEN: string
   ERROR: string
   OK: string

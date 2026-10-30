@@ -29,6 +29,10 @@
     // The exit checks out, but this request is not on it: another proxy
     // took over the route.
     REROUTED: 'rerouted',
+    // Firefox reported the request before it had a route, as tracking
+    // protection does with the ones it cancels. Blocked, but not flagged or
+    // listed.
+    PRE_ROUTE: 'pre-route',
     // The exit could not be checked at all: another proxy took the check.
     CHECK_TAKEN: 'check-taken',
     ERROR: 'error',
@@ -227,8 +231,15 @@
       const offRoute = via == null
         ? req.routed === true && !neverProxied(req.url)
         : !routedThrough(via, c, /** @type {string} */ (id))
-      if (offRoute) return v(BLOCK, R.REROUTED)
-      return v(ALLOW, R.OK)
+      if (!offRoute) return v(ALLOW, R.OK)
+      // Tracking protection reports a request it cancels before routing it,
+      // and the router still runs afterwards, so a bare request stamped no
+      // later than its route is not a strip. Pages are never cancelled that
+      // way. A strip can tie to the millisecond and go unflagged, but it is
+      // blocked all the same.
+      const early = typeof req.timeStamp === 'number' && typeof req.routedAt === 'number' && req.timeStamp <= req.routedAt
+      if (via == null && early && req.type !== 'main_frame') return v(BLOCK, R.PRE_ROUTE)
+      return v(BLOCK, R.REROUTED)
     }
 
     // 5. No container identity at all. It cannot be proven that this did not

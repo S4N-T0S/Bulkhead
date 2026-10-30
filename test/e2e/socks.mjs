@@ -25,8 +25,10 @@ function parseConnect (buf) {
 /**
  * @param {(target: { host: string, port: number }) => void} [onConnect] sees
  *   every destination this listener is asked to carry
+ * @param {(target: { host: string, port: number }) => { host: string, port: number }} [resolve]
+ *   where to really connect, for names that exist only in the test
  */
-export function socksServer (onConnect) {
+export function socksServer (onConnect, resolve = target => target) {
   /** @type {Set<net.Socket>} */
   const live = new Set()
   const server = net.createServer((sock) => {
@@ -42,7 +44,8 @@ export function socksServer (onConnect) {
           return
         }
         if (onConnect) onConnect(target)
-        const up = net.connect(target.port, target.host, () => {
+        const to = resolve(target)
+        const up = net.connect(to.port, to.host, () => {
           sock.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]))
           sock.pipe(up)
           up.pipe(sock)

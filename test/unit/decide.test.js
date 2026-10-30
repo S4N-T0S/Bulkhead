@@ -301,59 +301,76 @@ test('the only allow paths are probe, unmanaged, confirmed-up and relaxed-mode p
                 'http://evil.com.localhost/'
               ]) {
                 for (const route of ['own', 'foreign', 'none', 'stripped', 'otherType', 'otherHost', 'otherPort', 'noKey', 'localDns']) {
-                  const s = {
-                    ready,
-                    strict,
-                    allowLocal,
-                    containers: c ? { 'firefox-container-1': c } : {},
-                    probeTokens: new Set([TOKEN])
-                  }
-                  const own = c ? routeOf(c) : ROUTE
-                  const proxyInfo = {
-                    own,
-                    foreign: FOREIGN,
-                    none: null,
-                    stripped: null,
-                    otherType: { ...own, type: 'http' },
-                    otherHost: { ...own, host: '10.9.9.9' },
-                    otherPort: { ...own, port: own.port + 1 },
-                    noKey: { ...own, connectionIsolationKey: undefined },
-                    localDns: { ...own, proxyDNS: false }
-                  }[route]
-                  const routed = route !== 'none'
-                  const out = decide(s, { url, cookieStoreId: id, type, proxyInfo, routed, probeFor: 'firefox-container-1' })
-                  if (out.verdict === 'allow') {
-                    assert.ok(allowed.has(out.reason), `allow via unexpected reason ${out.reason}`)
-                    if (out.reason === R.PROBE) {
-                      assert.equal(url, PROBE, 'probe reason on a non-probe url')
-                      assert.ok(c && route === 'own', `probe allowed on route ${route}`)
+                  // when Firefox stamped the request, against the router's call
+                  for (const [timeStamp, routedAt] of [[undefined, undefined], [999, 1000], [1000, 1000], [1001, 1000], [1001, Infinity]]) {
+                    const s = {
+                      ready,
+                      strict,
+                      allowLocal,
+                      containers: c ? { 'firefox-container-1': c } : {},
+                      probeTokens: new Set([TOKEN])
                     }
-                    if (out.reason === R.LOOPBACK) {
-                      assert.ok(allowLocal === true, 'loopback allowed without the opt-in')
-                      assert.ok(LOOPBACK_URLS.has(url), `loopback reason on ${url}`)
-                      assert.ok(ready, 'loopback allowed before hydration')
-                      if (id === 'firefox-container-1' && c) assert.equal(proxyInfo, null, 'managed loopback allowed with a proxy on it')
+                    const own = c ? routeOf(c) : ROUTE
+                    const proxyInfo = {
+                      own,
+                      foreign: FOREIGN,
+                      none: null,
+                      stripped: null,
+                      otherType: { ...own, type: 'http' },
+                      otherHost: { ...own, host: '10.9.9.9' },
+                      otherPort: { ...own, port: own.port + 1 },
+                      noKey: { ...own, connectionIsolationKey: undefined },
+                      localDns: { ...own, proxyDNS: false }
+                    }[route]
+                    const routed = route !== 'none'
+                    const out = decide(s, {
+                      url, cookieStoreId: id, type, proxyInfo, routed, timeStamp, routedAt: routed ? routedAt : undefined, probeFor: 'firefox-container-1'
+                    })
+                    // only ever a block, on a bare, routed subresource stamped
+                    // no later than its route
+                    if (out.reason === R.PRE_ROUTE) {
+                      assert.equal(out.verdict, 'block', 'pre-route allowed')
+                      assert.ok(routed && proxyInfo === null && type !== 'main_frame', `pre-route on ${type} via ${route}`)
+                      assert.ok(timeStamp !== undefined && routedAt !== undefined && timeStamp <= routedAt, `pre-route at ${timeStamp}/${routedAt}`)
                     }
-                    // A managed container that is not up may be allowed only
-                    // by one of the two rules that outrank its health, and
-                    // only for the URL that rule is about.
-                    if (id === 'firefox-container-1' && c && c.health !== 'up' && ready) {
-                      const excused = (out.reason === R.PROBE && url === PROBE)
-                        || (out.reason === R.LOOPBACK && LOOPBACK_URLS.has(url))
-                      assert.ok(excused, `allowed a non-up container via ${out.reason} on ${url}`)
+                    // a page taken off its route raises the alarm, whenever it was stamped
+                    if (id === 'firefox-container-1' && c && c.health === 'up' && ready && type === 'main_frame' && route !== 'own' && route !== 'none'
+                      && !(route === 'stripped' && UNPROXIED_URLS.has(url))) {
+                      assert.equal(out.reason, R.REROUTED, `page on route ${route} to ${url} at ${timeStamp}`)
                     }
-                    // A managed container, once hydrated, lets a request through
-                    // on exactly three grounds: the live probe, opted-in
-                    // loopback with no proxy, or its own route -- which a
-                    // bare request only matches when the router never routed
-                    // it, or when it is bound for a name Firefox never
-                    // proxies.
-                    if (id === 'firefox-container-1' && c && ready) {
-                      const onRoute = route === 'own' || route === 'none' || (route === 'stripped' && UNPROXIED_URLS.has(url))
-                      const fine = (out.reason === R.PROBE && url === PROBE)
-                        || (out.reason === R.LOOPBACK && LOOPBACK_URLS.has(url) && proxyInfo === null)
-                        || (out.reason === R.OK && onRoute)
-                      assert.ok(fine, `managed request allowed via ${out.reason} on route ${route} to ${url}`)
+                    if (out.verdict === 'allow') {
+                      assert.ok(allowed.has(out.reason), `allow via unexpected reason ${out.reason}`)
+                      if (out.reason === R.PROBE) {
+                        assert.equal(url, PROBE, 'probe reason on a non-probe url')
+                        assert.ok(c && route === 'own', `probe allowed on route ${route}`)
+                      }
+                      if (out.reason === R.LOOPBACK) {
+                        assert.ok(allowLocal === true, 'loopback allowed without the opt-in')
+                        assert.ok(LOOPBACK_URLS.has(url), `loopback reason on ${url}`)
+                        assert.ok(ready, 'loopback allowed before hydration')
+                        if (id === 'firefox-container-1' && c) assert.equal(proxyInfo, null, 'managed loopback allowed with a proxy on it')
+                      }
+                      // A managed container that is not up may be allowed only
+                      // by one of the two rules that outrank its health, and
+                      // only for the URL that rule is about.
+                      if (id === 'firefox-container-1' && c && c.health !== 'up' && ready) {
+                        const excused = (out.reason === R.PROBE && url === PROBE)
+                          || (out.reason === R.LOOPBACK && LOOPBACK_URLS.has(url))
+                        assert.ok(excused, `allowed a non-up container via ${out.reason} on ${url}`)
+                      }
+                      // A managed container, once hydrated, lets a request through
+                      // on exactly three grounds: the live probe, opted-in
+                      // loopback with no proxy, or its own route -- which a
+                      // bare request only matches when the router never routed
+                      // it, or when it is bound for a name Firefox never
+                      // proxies.
+                      if (id === 'firefox-container-1' && c && ready) {
+                        const onRoute = route === 'own' || route === 'none' || (route === 'stripped' && UNPROXIED_URLS.has(url))
+                        const fine = (out.reason === R.PROBE && url === PROBE)
+                          || (out.reason === R.LOOPBACK && LOOPBACK_URLS.has(url) && proxyInfo === null)
+                          || (out.reason === R.OK && onRoute)
+                        assert.ok(fine, `managed request allowed via ${out.reason} on route ${route} to ${url}`)
+                      }
                     }
                   }
                 }
@@ -487,6 +504,43 @@ test('no route on a request the router never routed is not a strip', () => {
   }
   // which says nothing for a route someone else put there
   assert.equal(reason(st(), rq({ proxyInfo: FOREIGN, routed: false })), R.REROUTED)
+})
+
+test('a tracker Firefox cancelled before routing it is blocked without the alarm', () => {
+  // tracking protection reports its cancels before proxy resolution, then the
+  // router runs anyway
+  const bare = { proxyInfo: null, routed: true, routedAt: 1000 }
+  for (const type of ['xmlhttprequest', 'script', 'image', 'sub_frame', 'beacon', 'ping', 'websocket']) {
+    for (const timeStamp of [990, 999, 1000]) {
+      assert.deepEqual(decide(st(), rq({ ...bare, type, timeStamp })), { verdict: 'block', reason: R.PRE_ROUTE }, `${type} at ${timeStamp}`)
+    }
+    // a strip comes after the router
+    assert.deepEqual(decide(st(), rq({ ...bare, type, timeStamp: 1001 })), { verdict: 'block', reason: R.REROUTED }, type)
+    // a hop whose route is used up, or a websocket not routed for its channel yet
+    assert.deepEqual(decide(st(), rq({ ...bare, type, routedAt: Infinity, timeStamp: 5000 })), { verdict: 'block', reason: R.PRE_ROUTE }, type)
+    // Firefox may leave proxyInfo out rather than null it
+    assert.equal(reason(st(), rq({ ...bare, type, proxyInfo: undefined, timeStamp: 999 })), R.PRE_ROUTE, type)
+  }
+  // tracking protection never blocks the page itself
+  for (const timeStamp of [999, 1000, 1001]) {
+    assert.equal(reason(st(), rq({ ...bare, timeStamp })), R.REROUTED, String(timeStamp))
+  }
+  assert.equal(reason(st(), rq({ ...bare, routedAt: Infinity, timeStamp: 999 })), R.REROUTED)
+  // without both times there is nothing to tell it from a strip
+  for (const times of [
+    { timeStamp: 999, routedAt: undefined }, { timeStamp: undefined }, { timeStamp: NaN }, { routedAt: NaN, timeStamp: 999 },
+    { timeStamp: null }, { timeStamp: '999' }, { routedAt: null, timeStamp: -1 }, { routedAt: '1000', timeStamp: 999 }
+  ]) {
+    assert.equal(reason(st(), rq({ ...bare, type: 'script', ...times })), R.REROUTED, JSON.stringify(times))
+  }
+  // a proxy someone else put there is a takeover whenever it was stamped
+  for (const proxyInfo of [FOREIGN, { type: 'direct' }, { ...ROUTE, proxyDNS: false }]) {
+    assert.equal(reason(st(), rq({ ...bare, proxyInfo, type: 'script', timeStamp: 999 })), R.REROUTED, JSON.stringify(proxyInfo))
+  }
+  // and the rules above the route check still come first
+  assert.equal(reason(st({ containers: { 'firefox-container-1': DOWN } }), rq({ ...bare, type: 'script', timeStamp: 999 })), R.PROXY_DOWN)
+  assert.equal(reason(st(), rq({ ...bare, url: 'http://app.localhost/', type: 'script', timeStamp: 999 })), R.OK)
+  assert.equal(reason(st(), rq({ proxyInfo: null, routed: false, type: 'script', timeStamp: 999 })), R.OK)
 })
 
 test('a failed exit is reported as failed, whatever the route', () => {

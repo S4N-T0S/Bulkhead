@@ -191,8 +191,8 @@ browser.storage.onChanged.addListener((changes, area) => {
 })
 
 // Router: picks the SOCKS exit for each request. Fires before webRequest,
-// and cannot block -- an invalid return here means a direct connection, so
-// it only ever assigns.
+// except on a request Firefox's classifier cancels, and cannot block -- an
+// invalid return here means a direct connection, so it only ever assigns.
 browser.proxy.onRequest.addListener((d) => {
   const token = probeToken(d.url)
   if (token) {
@@ -225,27 +225,38 @@ browser.proxy.onRequest.addListener((d) => {
   // the gate allows can produce an invalid ProxyInfo, and Firefox answers
   // that with a direct connection.
   if (!id || !usableProxy(c)) return { type: 'direct' }
-  noteRouted(d.requestId)
+  // A websocket is routed twice, on admission and for its channel, with the
+  // classifier in between. Only the second call can come before a strip.
+  noteRouted(d.requestId, d.type === 'websocket' && !routedAt.has(d.requestId) ? Infinity : d.timeStamp)
   return socksInfo(/** @type {ContainerConfig} */ (c), id)
 }, { urls: ['<all_urls>'] })
 
 // Requests the router gave an exit, for the gate's route check (see
-// decide.js); the ids are the ones webRequest sees. Kept until the request
-// ends, not for a fixed time: an entry gone early would let a stripped
-// request through. The cap is only for ids that never end.
-/** @type {Set<string>} */
-const routedIds = new Set()
+// decide.js); the ids are the ones webRequest sees. The value is when the
+// current hop was routed, Infinity while it has no route of its own yet. Kept
+// until the request ends, not for a fixed time: an entry gone before its gate
+// would let a stripped request through. The cap is only for ids that never end.
+/** @type {Map<string, number>} */
+const routedAt = new Map()
 const ROUTED_CAP = 20000
+const ROUTED_MAX_AGE_MS = 5 * 60 * 1000
+let routedSweepAt = ROUTED_CAP
 
-/** @param {string} requestId */
-function noteRouted (requestId) {
-  routedIds.delete(requestId)
-  routedIds.add(requestId)
-  // insertion order is age order, so the oldest goes first
-  if (routedIds.size > ROUTED_CAP) routedIds.delete(/** @type {string} */ (routedIds.values().next().value))
+/** @param {string} requestId @param {number} at */
+function noteRouted (requestId, at) {
+  routedAt.delete(requestId)
+  routedAt.set(requestId, at)
+  if (routedAt.size <= routedSweepAt) return
+  // A page can get far more than the cap routed before the first gate runs,
+  // so a route still waiting for its gate stays until no gate can be coming.
+  const stale = Date.now() - ROUTED_MAX_AGE_MS
+  for (const [id, stamp] of routedAt) {
+    if (stamp === Infinity || stamp < stale) routedAt.delete(id)
+  }
+  routedSweepAt = Math.max(ROUTED_CAP, routedAt.size * 2)
 }
 
-browser.webRequest.onCompleted.addListener(d => routedIds.delete(d.requestId), { urls: ['<all_urls>'] })
+browser.webRequest.onCompleted.addListener(d => routedAt.delete(d.requestId), { urls: ['<all_urls>'] })
 
 // A syntactically valid SOCKS proxy that cannot resolve, so a request routed
 // here fails hard instead of falling through. .invalid is reserved by
@@ -285,8 +296,8 @@ function socksInfo (c, cookieStoreId) {
   return [info, null]
 }
 
-// Gate: the killswitch. Blocking listener, fires after the router, and its
-// cancel wins -- this is the sole authority on what passes.
+// Gate: the killswitch. Blocking listener, normally fires after the router,
+// and its cancel wins -- this is the sole authority on what passes.
 browser.webRequest.onBeforeRequest.addListener((d) => {
   const token = probeToken(d.url)
   const probing = Boolean(token && probeTargets.has(token) && isProbeUrl(d.url))
@@ -302,7 +313,8 @@ browser.webRequest.onBeforeRequest.addListener((d) => {
   try {
     out = decide(state, {
       ...d,
-      routed: routedIds.has(d.requestId),
+      routed: routedAt.has(d.requestId),
+      routedAt: routedAt.get(d.requestId),
       probeFor: probing ? probeTargets.get(/** @type {string} */ (token)) : undefined
     })
   } catch (e) {
@@ -310,6 +322,9 @@ browser.webRequest.onBeforeRequest.addListener((d) => {
     out = { verdict: 'block', reason: R.ERROR }
     log('[bulkhead] decide threw:', String(e))
   }
+  // A route covers one hop. A redirect can only follow this answer and gets
+  // its own router call, so no proxy ahead of that call is not a strip.
+  if (routedAt.has(d.requestId)) routedAt.set(d.requestId, Infinity)
   if (out.verdict === 'allow') {
     // Burn the token on use: proxy.onRequest has already taken its copy from
     // probeTargets, so the round trip is unaffected. What this closes is
@@ -326,6 +341,8 @@ browser.webRequest.onBeforeRequest.addListener((d) => {
   }
 
   log(`[bulkhead] BLOCKED ${out.reason} ${d.type} ${String(d.url).slice(0, 100)}`)
+  // Firefox cancels these itself, and listing them would bury real blocks
+  if (out.reason === R.PRE_ROUTE) return { cancel: true }
   // a taken check already shows on its container, and one every 30 s would
   // push real blocks out of the list
   if (!probing) recordBlock(d, out.reason)
@@ -414,7 +431,7 @@ function recordBlock (d, reason) {
 }
 
 browser.webRequest.onErrorOccurred.addListener((d) => {
-  routedIds.delete(d.requestId)
+  routedAt.delete(d.requestId)
   // A probe travels the proxy of the container it is checking, but it is
   // issued by this page, so it arrives here labelled firefox-default.
   // probe() draws its own conclusion from the failure; charging it here as

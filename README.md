@@ -180,8 +180,11 @@ with no I/O, clock or browser APIs, so it can be tested exhaustively.
 - **Every request extensions can see is route-checked** against the proxy
   Firefox reports for it. Anything but the container's own server is
   blocked as `rerouted`, including no proxy at all. Loopback and cache-only
-  loads never get one, so they are exempt. Server checks carry no tab, so
-  they can't see a takeover that only touches tabs.
+  loads never get one, so they are exempt. A request Firefox reports before
+  it has a route, as tracking protection does with what it cancels, is
+  blocked but not flagged or listed. A takeover in the same millisecond as
+  Bulkhead's routing looks the same for that one request. Server checks carry
+  no tab, so they can't see a takeover that only touches tabs.
 - **Nothing sits behind the exit.** The proxy list ends in `null`, so a
   refused server fails outright instead of falling back to a system, PAC or
   other extension's proxy.

@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, rerouted, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT */
+/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT */
 
 ;(() => {
   /** @param {string} line */
@@ -301,6 +301,14 @@
     await sleep(5000)
     const stripHit = blockLog.find(b => b.container === takeId && b.url.includes('bulkhead-stripped'))
     t(`K stripped blocked=${Boolean(stripHit)} reason=${stripHit ? stripHit.reason : 'NONE-LEAKED'} completed=${outcomeOf('bulkhead-stripped') === 'completed'} outcome=${outcomeOf('bulkhead-stripped')}`)
+    // the same with only a page's subresources stripped: the page stays on
+    // loopback, so a flag can only come from them
+    const subTab = await browser.tabs.create({ url: `http://127.0.0.1:${TEST_CANARY_PORT}/strip-page`, cookieStoreId: takeId, active: false })
+    await sleep(3000)
+    const subHits = blockLog.filter(b => b.url.includes('bulkhead-strip-sub') && b.reason === 'rerouted').length
+    const subDone = [...outcomes].filter(([u, o]) => u.includes('bulkhead-strip-sub') && o === 'completed').length
+    t(`K stripped sub flagged=${rerouted.has(Number(subTab.id))} completed=${subDone} logged=${subHits}`)
+    if (subTab.id !== undefined) await browser.tabs.remove(subTab.id).catch(() => null)
     // The check is routed by token and carries no tab, so a listener that
     // takes every tab-less request takes it too: it must be stopped before
     // it connects, and the container must say why it could not be checked,
@@ -367,6 +375,46 @@
     if (fallTab.id !== undefined) await browser.tabs.remove(fallTab.id).catch(() => null)
     await unassign(fallId)
     await browser.contextualIdentities.remove(fallId).catch(() => null)
+
+    // A flood gets routed ahead of its gates. Only routes no gate still needs
+    // may go to make room.
+    const floodNow = Date.now()
+    noteRouted('flood-waiting', floodNow)
+    noteRouted('flood-used', Infinity)
+    noteRouted('flood-old', floodNow - 3600000)
+    for (let i = 0; i <= ROUTED_CAP; i++) noteRouted(`flood-${i}`, floodNow)
+    t(`K flood kept=${routedAt.has('flood-waiting')} swept=${!routedAt.has('flood-used') && !routedAt.has('flood-old')}`)
+    for (const id of [...routedAt.keys()]) if (id.startsWith('flood-')) routedAt.delete(id)
+
+    // Trackers Firefox cancels reach the gate routed with no proxy, the shape
+    // of a strip: no flag and no log entry. The page is on loopback, so they
+    // are third party to it.
+    const trkIdent = await browser.contextualIdentities.create({ name: 'bulkhead-tracker', color: 'purple', icon: 'circle' })
+    const trkId = trkIdent.cookieStoreId
+    const trkCx = await saveCustomExit({ label: 'e2e tracker', host: '127.0.0.1', port: TEST_SOCKS_PORT })
+    await assign(trkId, `custom:${trkCx.id}`)
+    if (!await waitFor(() => Boolean(state.containers[trkId] && state.containers[trkId].health === 'up'), 60000)) {
+      t(`FAIL M exit never verified: ${JSON.stringify(state.containers[trkId])}`)
+    }
+    // no proxy on a name Firefox would proxy means the classifier fired
+    /** @type {Map<string, boolean>} */
+    const trkSeen = new Map()
+    /** @param {{ url: string, proxyInfo?: unknown }} d */
+    const seeTracker = (d) => {
+      if (d.url.includes('bulkhead-tracker')) trkSeen.set(d.url, !d.proxyInfo)
+    }
+    browser.webRequest.onBeforeRequest.addListener(seeTracker, { urls: ['<all_urls>'] })
+    const trkTab = await browser.tabs.create({ url: `http://127.0.0.1:${TEST_CANARY_PORT}/tracker-page`, cookieStoreId: trkId, active: false })
+    await waitFor(() => trkSeen.size > 0 && [...trkSeen.keys()].every(u => outcomes.has(u)), 10000)
+    await sleep(1000)
+    browser.webRequest.onBeforeRequest.removeListener(seeTracker)
+    const trkOut = [...trkSeen.keys()].map(u => outcomes.get(u) || 'none')
+    // ABORT is the gate's cancel; one it let through ends on the classifier's error
+    const gated = trkOut.filter(o => o === 'NS_ERROR_ABORT').length
+    t(`M tracker early=${trkSeen.size > 1 && [...trkSeen.values()].every(Boolean)} completed=${trkOut.includes('completed')} logged=${blockLog.some(b => b.url.includes('bulkhead-tracker'))} flagged=${rerouted.has(Number(trkTab.id))} ws=${outcomeOf('bulkhead-tracker-ws')} gated=${gated}/${trkOut.length} outcomes=${[...new Set(trkOut)].join(',')}`)
+    if (trkTab.id !== undefined) await browser.tabs.remove(trkTab.id).catch(() => null)
+    await unassign(trkId)
+    await browser.contextualIdentities.remove(trkId).catch(() => null)
 
     if (TEST_TUNNEL) {
       // The same server a relay assignment would use, typed in by hand.

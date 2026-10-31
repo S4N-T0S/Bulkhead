@@ -252,6 +252,7 @@ const TAIL_OVERLAP_MS = 2000
 // Firefox keeps about 1 KB for every listener ever added, until the page that
 // added it closes: 15 MB a day at this period. So a frame adds them, and goes.
 const TAIL_FRAME_MOVES = 120
+const TAIL_FRAME_LOAD_MS = 10000
 /** @type {{ api: any, fn: (d: browser.proxy._OnRequestDetails) => unknown } | null} */
 let tail = null
 let tailMovedAt = 0
@@ -266,7 +267,7 @@ function tailListener () {
   return (/** @type {browser.proxy._OnRequestDetails} */ d) => route(d, false)
 }
 
-/** @param {HTMLIFrameElement} frame */
+/** @param {HTMLIFrameElement} frame @returns {boolean} */
 function addTail (frame) {
   const old = tail
   // Called from the gate and at startup, neither of which can afford a throw.
@@ -278,29 +279,42 @@ function addTail (frame) {
     tailFrameMoves++
   } catch (e) {
     log('[bulkhead] tail move failed:', String(e))
-    return
+    return false
   }
   if (old) setTimeout(() => old.api.removeListener(old.fn), TAIL_OVERLAP_MS)
+  return true
 }
 
 /** @param {HTMLIFrameElement} frame */
 function useTailFrame (frame) {
+  tailFrameLoading = false
+  // The old frame holds the only listener, so it stays until this one has its own.
+  if (!addTail(frame)) {
+    frame.remove()
+    return
+  }
   const old = tailFrame
   tailFrame = frame
-  tailFrameLoading = false
-  tailFrameMoves = 0
-  addTail(frame)
+  tailFrameMoves = 1
   if (old) setTimeout(() => old.remove(), TAIL_OVERLAP_MS)
 }
 
 function moveTail () {
   tailMovedAt = Date.now()
-  if (tailFrame) addTail(tailFrame)
-  if ((tailFrame && tailFrameMoves < TAIL_FRAME_MOVES) || tailFrameLoading) return
+  const moved = tailFrame !== null && addTail(tailFrame)
+  if ((moved && tailFrameMoves < TAIL_FRAME_MOVES) || tailFrameLoading) return
   tailFrameLoading = true
   const frame = document.createElement('iframe')
   frame.src = 'tail.html'
-  frame.addEventListener('load', () => useTailFrame(frame), { once: true })
+  const giveUp = setTimeout(() => {
+    log('[bulkhead] tail frame did not load')
+    frame.remove()
+    tailFrameLoading = false
+  }, TAIL_FRAME_LOAD_MS)
+  frame.addEventListener('load', () => {
+    clearTimeout(giveUp)
+    useTailFrame(frame)
+  }, { once: true })
   document.body.append(frame)
 }
 

@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, tail, tailMovedAt, tailFrame, tailFrameMoves:writable, TAIL_FRAME_MOVES, TAIL_OVERLAP_MS, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT, nextProbeAt, PROBE_INTERVAL_DOWN_MS */
+/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, tail, tailMovedAt, tailFrame, tailFrameLoading, tailFrameMoves:writable, TAIL_FRAME_MOVES, TAIL_FRAME_LOAD_MS, TAIL_OVERLAP_MS, TAIL_PERIOD_MS, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT, nextProbeAt, PROBE_INTERVAL_DOWN_MS */
 
 ;(() => {
   /** @param {string} line */
@@ -505,9 +505,54 @@
     tailFrameMoves = TAIL_FRAME_MOVES
     await moved()
     const frameReplaced = await waitFor(() => tailFrame !== oldFrame, 5000)
+    // once the old frame is gone, with no timer move since: only the swap's own listener is left
+    const frameGone = await waitFor(() => !oldFrame.isConnected, TAIL_OVERLAP_MS + 1000)
     await preconnectTo('tail-frame')
+    await sleep(500)
+    t(`O frame new=${frameReplaced} restarted=${tailFrameMoves < TAIL_FRAME_MOVES} gone=${frameGone} frames=${document.querySelectorAll('iframe').length} direct=${(await preconnects()).direct - frameDirect} seen=${stripSeen.has('tail-frame')}`)
+
+    // a frame that can't add a listener goes, and the one that holds the listener stays
+    const badFrame = /** @type {any} */ (Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow'))
+    const goodFrame = tailFrame
+    const goodTail = tail
+    const badDirect = (await preconnects()).direct
+    const frameWindow = (/** @type {(frame: HTMLIFrameElement) => object} */ pick) => Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+      configurable: true,
+      get () {
+        return pick(this)
+      }
+    })
+    frameWindow(frame => frame === goodFrame ? badFrame.get.call(frame) : {})
+    tailFrameMoves = TAIL_FRAME_MOVES
+    const badTried = await waitFor(() => tail !== goodTail, 8000)
+    await waitFor(() => !tailFrameLoading, 5000)
     await sleep(TAIL_OVERLAP_MS + 200)
-    t(`O frame new=${frameReplaced} restarted=${tailFrameMoves < TAIL_FRAME_MOVES} gone=${!oldFrame.isConnected} frames=${document.querySelectorAll('iframe').length} direct=${(await preconnects()).direct - frameDirect} seen=${stripSeen.has('tail-frame')}`)
+    await preconnectTo('tail-bad')
+    await sleep(500)
+    t(`O frame bad tried=${badTried} kept=${tailFrame === goodFrame && goodFrame.isConnected} frames=${document.querySelectorAll('iframe').length} direct=${(await preconnects()).direct - badDirect} seen=${stripSeen.has('tail-bad')}`)
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', badFrame)
+    t(`O frame bad retried=${await waitFor(() => tailFrame !== goodFrame, 12000)} single=${await waitFor(() => document.querySelectorAll('iframe').length === 1, TAIL_OVERLAP_MS + 1000)}`)
+
+    // a frame that stops adding is replaced, not kept for the rest of its moves
+    const deadFrame = tailFrame
+    frameWindow(frame => frame === deadFrame ? {} : badFrame.get.call(frame))
+    t(`O frame dead replaced=${await waitFor(() => tailFrame !== deadFrame, 8000)}`)
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', badFrame)
+
+    // a frame that never loads is dropped, and the next move starts another
+    const stuckFrame = tailFrame
+    // its load listener never gets added, so it stays there unused
+    HTMLIFrameElement.prototype.addEventListener = function () {
+      delete HTMLIFrameElement.prototype.addEventListener
+    }
+    tailFrameMoves = TAIL_FRAME_MOVES
+    const stuckStarted = await waitFor(() => tailFrameLoading, 8000)
+    const stuckReplaced = await waitFor(() => tailFrame !== stuckFrame, TAIL_FRAME_LOAD_MS + TAIL_PERIOD_MS + 1000)
+    const stuckSingle = await waitFor(() => document.querySelectorAll('iframe').length === 1, TAIL_OVERLAP_MS + 1000)
+    // the frame that did load outlives the time limit
+    const stayFrame = tailFrame
+    await sleep(TAIL_FRAME_LOAD_MS + 500)
+    t(`O frame stuck started=${stuckStarted} replaced=${stuckReplaced} single=${stuckSingle} stayed=${tailFrame === stayFrame && stayFrame.isConnected}`)
 
     // a route on a websocket is overruled, not flagged, and an unmanaged tab keeps it
     stripAs = 'proxy'
@@ -574,7 +619,7 @@
         return Boolean(c && c.health && c.health !== 'unknown')
       }, 30000)
       const cxLive = state.containers[cxId]
-      t(`H custom live health=${cxLive && cxLive.health} custom=${Boolean(cxLive && cxLive.custom)}`)
+      t(`H custom live health=${cxLive && cxLive.health} custom=${Boolean(cxLive && cxLive.custom)} host=${relay.host} detail=${cxLive && cxLive.healthDetail}`)
     } else {
       t('SKIP H (no tunnel)')
     }

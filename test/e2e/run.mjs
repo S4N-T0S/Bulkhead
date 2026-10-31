@@ -28,7 +28,7 @@ const REDIRECTOR = 'redirect.bulkhead.example'
 // these resolve to the leak listener, so a connection there skipped the exit;
 // the local exit carries them to the canary
 const PRECONNECT = 'preconnect.bulkhead.example'
-const TAIL_NAMES = ['tail-window', 'tail-moved', 'tail-load', 'tail-strip', 'tail-ws', 'tail-over', 'tail-other', 'tail-img', 'tail-frame']
+const TAIL_NAMES = ['tail-window', 'tail-moved', 'tail-load', 'tail-strip', 'tail-ws', 'tail-over', 'tail-other', 'tail-img', 'tail-frame', 'tail-bad']
 const PRECONNECTS = ['update', 'create', 'page', ...TAIL_NAMES].map(name => `${name}.${PRECONNECT}`)
 
 const firefox = await firefoxBinary()
@@ -253,6 +253,10 @@ function evaluate () {
     '[test] O last direct=0 seen=true ws=true logged=false',
     '[test] O swap kept=true old=false current=true',
     '[test] O frame new=true restarted=true gone=true frames=1 direct=0 seen=true',
+    '[test] O frame bad tried=true kept=true frames=1 direct=0 seen=true',
+    '[test] O frame bad retried=true single=true',
+    '[test] O frame dead replaced=true',
+    '[test] O frame stuck started=true replaced=true single=true stayed=true',
     '[test] O overruled foreign=0 exit=true logged=false flagged=false',
     '[test] O unmanaged foreign=true',
     '[test] O load ws=true logged=false moved=true',

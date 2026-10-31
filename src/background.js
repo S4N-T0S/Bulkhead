@@ -303,19 +303,24 @@ function moveTail () {
   tailMovedAt = Date.now()
   const moved = tailFrame !== null && addTail(tailFrame)
   if ((moved && tailFrameMoves < TAIL_FRAME_MOVES) || tailFrameLoading) return
-  tailFrameLoading = true
-  const frame = document.createElement('iframe')
-  frame.src = 'tail.html'
-  const giveUp = setTimeout(() => {
-    log('[bulkhead] tail frame did not load')
-    frame.remove()
-    tailFrameLoading = false
-  }, TAIL_FRAME_LOAD_MS)
-  frame.addEventListener('load', () => {
-    clearTimeout(giveUp)
-    useTailFrame(frame)
-  }, { once: true })
-  document.body.append(frame)
+  // As in addTail. Nothing is set until the frame is in, so the next move tries again.
+  try {
+    const frame = document.createElement('iframe')
+    frame.src = 'tail.html'
+    document.body.append(frame)
+    tailFrameLoading = true
+    const giveUp = setTimeout(() => {
+      log('[bulkhead] tail frame did not load')
+      frame.remove()
+      tailFrameLoading = false
+    }, TAIL_FRAME_LOAD_MS)
+    frame.addEventListener('load', () => {
+      clearTimeout(giveUp)
+      useTailFrame(frame)
+    }, { once: true })
+  } catch (e) {
+    log('[bulkhead] tail frame failed:', String(e))
+  }
 }
 
 // Requests the router gave an exit, for the gate's route check (see

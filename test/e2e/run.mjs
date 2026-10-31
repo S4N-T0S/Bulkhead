@@ -227,6 +227,7 @@ function evaluate () {
     '[test] K probe taken health=taken carried=0 logged=false said=true',
     '[test] K released passed=true flagged=false',
     '[test] L fallback carried=0 completed=false health=down',
+    '[test] L recheck soon=true',
     '[test] K flood kept=true swept=true',
     '[test] M tracker early=true completed=false logged=false flagged=false ws=NS_ERROR_ABORT',
     '[test] N preconnect direct=0 pages=2 page=true',

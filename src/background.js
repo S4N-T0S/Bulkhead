@@ -711,6 +711,9 @@ function markHealth (id, health, detail, exitIp) {
     // past it, a blocked page that has since promised to load would meet it
     // on recovery and stop; the gate decides again on arrival anyway.
     if (prev === 'up') clearReroutes(id)
+    // A request can fail an exit between checks, and the next one is still on
+    // the slow schedule.
+    if (prev === 'up') scheduleProbe(id, health)
     // A relay failing, or one recovering while another still fails: the two
     // moments a retired server would show.
     if (c.socksHost && convicted(health) && !convicted(prev)) refreshRelaysOnFailure(false)
@@ -732,6 +735,10 @@ function markHealth (id, health, detail, exitIp) {
 // endpoint this design has to trust.
 const PROBE_INTERVAL_UP_MS = 10 * 60 * 1000
 const PROBE_INTERVAL_DOWN_MS = 30 * 1000
+// The tick fires every check that came due since the last one, so each waits
+// a random part of the next 20 s. A check run during the wait moved the due
+// time, so the timer skips.
+const PROBE_SPREAD_MS = 20 * 1000
 
 /** @type {Map<string, number>} */
 const nextProbeAt = new Map()
@@ -769,7 +776,10 @@ browser.alarms.onAlarm.addListener((a) => {
       scheduleProbe(id, state.containers[id].health)
       continue
     }
-    if (due <= now) probe(id)
+    if (due > now) continue
+    setTimeout(() => {
+      if ((nextProbeAt.get(id) || Infinity) <= Date.now()) probe(id)
+    }, Math.random() * PROBE_SPREAD_MS)
   }
   for (const id of nextProbeAt.keys()) {
     if (!(id in state.containers)) nextProbeAt.delete(id)

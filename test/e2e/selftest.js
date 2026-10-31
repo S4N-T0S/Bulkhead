@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT */
+/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT, nextProbeAt, PROBE_INTERVAL_DOWN_MS */
 
 ;(() => {
   /** @param {string} line */
@@ -371,6 +371,8 @@
     await sleep(6000)
     const fallC = state.containers[fallId]
     t(`L fallback carried=${await carried() - fallBefore} completed=${outcomeOf('bulkhead-fallback') === 'completed'} health=${fallC && fallC.health} outcome=${outcomeOf('bulkhead-fallback')}`)
+    // the request failed it, so no check has rescheduled the next one
+    t(`L recheck soon=${(nextProbeAt.get(fallId) || Infinity) - Date.now() <= PROBE_INTERVAL_DOWN_MS * 1.3}`)
     globalThis.testForeignFirst.clear()
     if (fallTab.id !== undefined) await browser.tabs.remove(fallTab.id).catch(() => null)
     await unassign(fallId)

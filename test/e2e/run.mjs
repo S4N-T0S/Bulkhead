@@ -28,7 +28,8 @@ const REDIRECTOR = 'redirect.bulkhead.example'
 // these resolve to the leak listener, so a connection there skipped the exit;
 // the local exit carries them to the canary
 const PRECONNECT = 'preconnect.bulkhead.example'
-const PRECONNECTS = ['update', 'create', 'page'].map(name => `${name}.${PRECONNECT}`)
+const TAIL_NAMES = ['tail-window', 'tail-moved', 'tail-load', 'tail-strip', 'tail-ws', 'tail-over', 'tail-other', 'tail-img', 'tail-frame']
+const PRECONNECTS = ['update', 'create', 'page', ...TAIL_NAMES].map(name => `${name}.${PRECONNECT}`)
 
 const firefox = await firefoxBinary()
 const tunnel = await detectTunnel()
@@ -70,10 +71,25 @@ const canary = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' })
     return res.end(`<!doctype html><link rel="preconnect" href="http://page.${PRECONNECT}:${leakPort}/">`)
   }
+  // does what its fragment says, so the selftest can act from a page already open
+  if (req.url === '/tail-page') {
+    res.writeHead(200, { 'content-type': 'text/html' })
+    return res.end(`<!doctype html><script>
+      function act () {
+        const [kind, name] = location.hash.slice(1).split(':')
+        const origin = '//' + name + '.${PRECONNECT}:${leakPort}/'
+        if (kind === 'ws') new WebSocket('ws:' + origin + '?bulkhead-' + name).onerror = () => null
+        if (kind === 'img') new Image().src = 'http:' + origin + '?bulkhead-' + name
+      }
+      onhashchange = act
+      if (location.hash) act()
+    </script>`)
+  }
   res.writeHead(200, { 'content-type': 'text/plain' })
   // the selftest's levers on the listeners below
   if (req.url === '/kill-exit') exit.kill()
   if (req.url === '/foreign-hits') return res.end(JSON.stringify(foreignHits))
+  if (req.url === '/tail-hits') return res.end(JSON.stringify(canaryHits.filter(u => u.includes('bulkhead-tail'))))
   if (req.url === '/preconnects') return res.end(JSON.stringify({ direct: leakConnections, pages: canaryHits.filter(u => u.includes('bulkhead-preconnect')).length, page: canaryHits.includes('/preconnect-page') }))
   res.end('ok')
 })
@@ -231,6 +247,16 @@ function evaluate () {
     '[test] K flood kept=true swept=true',
     '[test] M tracker early=true completed=false logged=false flagged=false ws=NS_ERROR_ABORT',
     '[test] N preconnect direct=0 pages=2 page=true',
+    '[test] O inert moved=false listening=true',
+    '[test] O first moved=true',
+    '[test] O window leaked=true seen=true ws=NS_ERROR_ABORT',
+    '[test] O last direct=0 seen=true ws=true logged=false',
+    '[test] O swap kept=true old=false current=true',
+    '[test] O frame new=true restarted=true gone=true frames=1 direct=0 seen=true',
+    '[test] O overruled foreign=0 exit=true logged=false flagged=false',
+    '[test] O unmanaged foreign=true',
+    '[test] O load ws=true logged=false moved=true',
+    '[test] O limit rate=true sub=true unmanaged=true',
     '[test] E race notup=true'
   ]
   // the tunnel run raises exactly one offline warning, so pinning the total

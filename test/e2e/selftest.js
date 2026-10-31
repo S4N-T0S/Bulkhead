@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT, nextProbeAt, PROBE_INTERVAL_DOWN_MS */
+/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, tail, tailMovedAt, tailFrame, tailFrameMoves:writable, TAIL_FRAME_MOVES, TAIL_OVERLAP_MS, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT, nextProbeAt, PROBE_INTERVAL_DOWN_MS */
 
 ;(() => {
   /** @param {string} line */
@@ -57,8 +57,10 @@
 
     // No managed containers yet: the extension must be inert for a normal
     // tab. Its request must pass and leave no trace in the block log.
+    const inertMoved = tailMovedAt
     const inertTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-inert', active: false })
     await sleep(6000)
+    t(`O inert moved=${tailMovedAt !== inertMoved} listening=${Boolean(tail) && tail.api.hasListener(tail.fn)}`)
     const inertHit = blockLog.find(b => b.url.includes('bulkhead-inert'))
     // the positive path: with nothing managed the request must genuinely
     // complete, not merely go unblocked
@@ -76,7 +78,10 @@
     // lands over the runner's own connection and seeds the cache case D
     // needs empty, so the trigger is parked here; the tunnel run asserts it.
     if (!TEST_TUNNEL) relayRecheckAt = Date.now()
+    const firstMoved = tailMovedAt
     await browser.storage.local.set({ containers: { [deadId]: stored } })
+    await waitFor(() => deadId in state.containers, 5000)
+    t(`O first moved=${tailMovedAt !== firstMoved}`)
     await waitFor(() => {
       const c = state.containers[deadId]
       return Boolean(c && c.health === 'down')
@@ -432,6 +437,120 @@
     await browser.tabs.remove([Number(prePage.id), Number(preTab.id), Number(preNew.id)]).catch(() => null)
     await unassign(trkId)
     await browser.contextualIdentities.remove(trkId).catch(() => null)
+
+    // The tail depends on Firefox asking listeners in registration order with the
+    // last answer standing. A stripper added after the tail must win, and must lose
+    // once the tail has moved; if the order changes, one of the two lines fails.
+    const lastIdent = await browser.contextualIdentities.create({ name: 'bulkhead-tail', color: 'blue', icon: 'circle' })
+    const lastId = lastIdent.cookieStoreId
+    const lastCx = await saveCustomExit({ label: 'e2e tail', host: '127.0.0.1', port: TEST_SOCKS_PORT })
+    await assign(lastId, `custom:${lastCx.id}`)
+    if (!await waitFor(() => Boolean(state.containers[lastId] && state.containers[lastId].health === 'up'), 60000)) {
+      t(`FAIL O exit never verified: ${JSON.stringify(state.containers[lastId])}`)
+    }
+    const tailPage = `http://127.0.0.1:${TEST_CANARY_PORT}/tail-page`
+    /** @type {Set<string>} */
+    const stripSeen = new Set()
+    /** @type {'null' | 'proxy'} */
+    let stripAs = 'null'
+    /** @param {browser.proxy._OnRequestDetails} d */
+    const stripper = (d) => {
+      const name = d.url.match(/\/\/(tail-[a-z]+)\./)
+      if (!name || (d.type !== 'speculative' && d.type !== 'websocket')) return undefined
+      stripSeen.add(name[1])
+      return stripAs === 'null' ? null : { type: 'socks', host: '127.0.0.1', port: TEST_FOREIGN_PORT, proxyDNS: true }
+    }
+    const moved = async () => {
+      const at = tailMovedAt
+      const until = Date.now() + 10000
+      while (tailMovedAt === at && Date.now() < until) await sleep(20)
+      if (tailMovedAt === at) t('FAIL O the tail stopped moving')
+    }
+    const tailHits = async () => (await fetch(`http://127.0.0.1:${TEST_CANARY_PORT}/tail-hits`)).json()
+    const blockedTail = (/** @type {string} */ name) => blockLog.some(b => b.url.includes(`${name}.`))
+    const lastTab = Number((await browser.tabs.create({ url: tailPage, cookieStoreId: lastId, active: false })).id)
+    await sleep(1000)
+    const act = (/** @type {string} */ what, tab = lastTab) => browser.tabs.update(tab, { url: `${tailPage}#${what}` })
+    // every build preconnects ahead of tabs.update; the load this starts is inside the rate limit
+    const navTab = Number((await browser.tabs.create({ url: 'about:blank', cookieStoreId: lastId, active: false })).id)
+    const preconnectTo = (/** @type {string} */ name) => browser.tabs.update(navTab, { url: preUrl(name) })
+
+    // just after a move, so the stripper stays last for the whole check
+    const lastBefore = (await preconnects()).direct
+    await moved()
+    browser.proxy.onRequest.addListener(stripper, { urls: ['<all_urls>'] })
+    await act('ws:tail-strip')
+    await preconnectTo('tail-window')
+    await sleep(1500)
+    t(`O window leaked=${(await preconnects()).direct > lastBefore} seen=${stripSeen.has('tail-window')} ws=${outcomeOf('bulkhead-tail-strip')}`)
+
+    // moved on the timer: nothing here loads a page
+    const lastDirect = (await preconnects()).direct
+    await moved()
+    const oldTail = tail
+    await act('ws:tail-ws')
+    await preconnectTo('tail-moved')
+    await sleep(1500)
+    t(`O last direct=${(await preconnects()).direct - lastDirect} seen=${stripSeen.has('tail-moved')} ws=${(await tailHits()).includes('/?bulkhead-tail-ws')} logged=${blockedTail('tail-ws')}`)
+
+    // the old listener stays for the overlap, then goes
+    await moved()
+    const oldKept = oldTail.api.hasListener(oldTail.fn)
+    await sleep(TAIL_OVERLAP_MS + 200)
+    t(`O swap kept=${oldKept} old=${oldTail.api.hasListener(oldTail.fn)} current=${tail.api.hasListener(tail.fn)}`)
+
+    // the frame goes once it has added enough, and a listener from the next one still wins
+    const oldFrame = tailFrame
+    const frameDirect = (await preconnects()).direct
+    tailFrameMoves = TAIL_FRAME_MOVES
+    await moved()
+    const frameReplaced = await waitFor(() => tailFrame !== oldFrame, 5000)
+    await preconnectTo('tail-frame')
+    await sleep(TAIL_OVERLAP_MS + 200)
+    t(`O frame new=${frameReplaced} restarted=${tailFrameMoves < TAIL_FRAME_MOVES} gone=${!oldFrame.isConnected} frames=${document.querySelectorAll('iframe').length} direct=${(await preconnects()).direct - frameDirect} seen=${stripSeen.has('tail-frame')}`)
+
+    // a route on a websocket is overruled, not flagged, and an unmanaged tab keeps it
+    stripAs = 'proxy'
+    const overTab = Number((await browser.tabs.create({ url: tailPage, cookieStoreId: lastId, active: false })).id)
+    const keptTab = Number((await browser.tabs.create({ url: tailPage, active: false })).id)
+    await sleep(1000)
+    await moved()
+    await act('ws:tail-over', overTab)
+    await act('ws:tail-other', keptTab)
+    await sleep(1500)
+    t(`O overruled foreign=${await carried('tail-over.preconnect.bulkhead.example')} exit=${(await tailHits()).includes('/?bulkhead-tail-over')} logged=${blockedTail('tail-over')} flagged=${rerouted.has(overTab)}`)
+    t(`O unmanaged foreign=${await carried('tail-other.preconnect.bulkhead.example') > 0}`)
+    stripAs = 'null'
+
+    // moved by the page load, well clear of the timer and the rate limit
+    await moved()
+    await sleep(TAIL_OVERLAP_MS + 100)
+    browser.proxy.onRequest.removeListener(stripper)
+    browser.proxy.onRequest.addListener(stripper, { urls: ['<all_urls>'] })
+    const loadMoved = tailMovedAt
+    const loadTab = Number((await browser.tabs.create({ url: `${tailPage}#ws:tail-load`, cookieStoreId: lastId, active: false })).id)
+    await sleep(1000)
+    t(`O load ws=${(await tailHits()).includes('/?bulkhead-tail-load')} logged=${blockedTail('tail-load')} moved=${tailMovedAt !== loadMoved}`)
+
+    // only a page load the gate allows moves it, and no more than once per overlap
+    const limitMoved = tailMovedAt
+    const rateTab = Number((await browser.tabs.create({ url: tailPage, cookieStoreId: lastId, active: false })).id)
+    await sleep(500)
+    const rate = tailMovedAt === limitMoved
+    await moved()
+    await sleep(TAIL_OVERLAP_MS + 100)
+    const quietMoved = tailMovedAt
+    await act('img:tail-img')
+    await waitFor(() => outcomeOf('bulkhead-tail-img') !== 'none', 1000)
+    const sub = outcomeOf('bulkhead-tail-img') === 'completed' && tailMovedAt === quietMoved
+    const quietTab = Number((await browser.tabs.create({ url: tailPage, active: false })).id)
+    await sleep(500)
+    t(`O limit rate=${rate} sub=${sub} unmanaged=${tailMovedAt === quietMoved}`)
+
+    browser.proxy.onRequest.removeListener(stripper)
+    await browser.tabs.remove([lastTab, navTab, overTab, keptTab, loadTab, rateTab, quietTab]).catch(() => null)
+    await unassign(lastId)
+    await browser.contextualIdentities.remove(lastId).catch(() => null)
 
     if (TEST_TUNNEL) {
       // The same server a relay assignment would use, typed in by hand.

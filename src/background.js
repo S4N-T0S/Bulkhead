@@ -142,7 +142,10 @@ async function hydrate () {
     // everything else starts at 'unknown', which blocks until proven up.
     // Health is never persisted: a restarted browser trusts nothing.
     const { containers, stale } = relaylib.mergeAssignments(state.containers, s.containers || {})
+    const wasInert = !Object.keys(state.containers).length
     state.containers = containers
+    // The timer leaves it alone while nothing is assigned, so it can be far back.
+    if (wasInert && Object.keys(containers).length) moveTail()
     for (const id of Object.keys(renamed)) {
       if (!(id in containers) || stale.includes(id)) delete renamed[id]
     }
@@ -193,7 +196,8 @@ browser.storage.onChanged.addListener((changes, area) => {
 // Router: picks the SOCKS exit for each request. Fires before webRequest,
 // except on a request Firefox's classifier cancels, and cannot block -- an
 // invalid return here means a direct connection, so it only ever assigns.
-browser.proxy.onRequest.addListener((d) => {
+/** @param {browser.proxy._OnRequestDetails} d @param {boolean} [note] */
+function route (d, note = true) {
   const token = probeToken(d.url)
   if (token) {
     const target = probeTargets.get(token)
@@ -228,9 +232,77 @@ browser.proxy.onRequest.addListener((d) => {
   if (!id || !usableProxy(c)) return { type: 'direct' }
   // A websocket is routed twice, on admission and for its channel, with the
   // classifier in between. Only the second call can come before a strip.
-  noteRouted(d.requestId, d.type === 'websocket' && !routedAt.has(d.requestId) ? Infinity : d.timeStamp)
+  if (note) noteRouted(d.requestId, d.type === 'websocket' && !routedAt.has(d.requestId) ? Infinity : d.timeStamp)
   return socksInfo(/** @type {ContainerConfig} */ (c), id)
-}, { urls: ['<all_urls>'] })
+}
+browser.proxy.onRequest.addListener(d => route(d), { urls: ['<all_urls>'] })
+
+// Firefox asks proxy listeners in the order they registered and the last answer
+// stands, so an extension registered later can strip a route. The gate stops what
+// that strips, except a preconnect, which never reaches it, and a websocket, which
+// looks its name up first. So those two get asked here again, last in line. Adding
+// the listener anew is the only way to the end of the line. The API doesn't promise
+// this order; e2e case O fails if it changes.
+const TAIL_FILTER = { urls: ['<all_urls>'], types: /** @type {browser.webRequest.ResourceType[]} */ (['speculative', 'websocket']) }
+// How long an extension registered later gets.
+const TAIL_PERIOD_MS = 5000
+// A chain already running still calls the old listener, and one removed by then
+// answers nothing: up to 11 preconnects in 1500 went direct that way at a 100 ms period.
+const TAIL_OVERLAP_MS = 2000
+// Firefox keeps about 1 KB for every listener ever added, until the page that
+// added it closes: 15 MB a day at this period. So a frame adds them, and goes.
+const TAIL_FRAME_MOVES = 120
+/** @type {{ api: any, fn: (d: browser.proxy._OnRequestDetails) => unknown } | null} */
+let tail = null
+let tailMovedAt = 0
+/** @type {HTMLIFrameElement | null} */
+let tailFrame = null
+let tailFrameLoading = false
+let tailFrameMoves = 0
+
+// Made out here: in addTail's scope each would hold on to the one before it
+// through `old`, and through that every frame there has been.
+function tailListener () {
+  return (/** @type {browser.proxy._OnRequestDetails} */ d) => route(d, false)
+}
+
+/** @param {HTMLIFrameElement} frame */
+function addTail (frame) {
+  const old = tail
+  // Called from the gate and at startup, neither of which can afford a throw.
+  try {
+    const api = /** @type {any} */ (frame.contentWindow).browser.proxy.onRequest
+    const fn = tailListener()
+    api.addListener(fn, TAIL_FILTER)
+    tail = { api, fn }
+    tailFrameMoves++
+  } catch (e) {
+    log('[bulkhead] tail move failed:', String(e))
+    return
+  }
+  if (old) setTimeout(() => old.api.removeListener(old.fn), TAIL_OVERLAP_MS)
+}
+
+/** @param {HTMLIFrameElement} frame */
+function useTailFrame (frame) {
+  const old = tailFrame
+  tailFrame = frame
+  tailFrameLoading = false
+  tailFrameMoves = 0
+  addTail(frame)
+  if (old) setTimeout(() => old.remove(), TAIL_OVERLAP_MS)
+}
+
+function moveTail () {
+  tailMovedAt = Date.now()
+  if (tailFrame) addTail(tailFrame)
+  if ((tailFrame && tailFrameMoves < TAIL_FRAME_MOVES) || tailFrameLoading) return
+  tailFrameLoading = true
+  const frame = document.createElement('iframe')
+  frame.src = 'tail.html'
+  frame.addEventListener('load', () => useTailFrame(frame), { once: true })
+  document.body.append(frame)
+}
 
 // Requests the router gave an exit, for the gate's route check (see
 // decide.js); the ids are the ones webRequest sees. The value is when the
@@ -327,6 +399,8 @@ browser.webRequest.onBeforeRequest.addListener((d) => {
   // its own router call, so no proxy ahead of that call is not a strip.
   if (routedAt.has(d.requestId)) routedAt.set(d.requestId, Infinity)
   if (out.verdict === 'allow') {
+    // A page's preconnects follow its response, so this goes ahead of them.
+    if (d.type === 'main_frame' && out.reason === R.OK && Date.now() - tailMovedAt >= TAIL_OVERLAP_MS) moveTail()
     // Burn the token on use: proxy.onRequest has already taken its copy from
     // probeTargets, so the round trip is unaffected. What this closes is
     // replay of an observed token by anything else.
@@ -756,6 +830,11 @@ function scheduleProbe (id, health) {
 // nothing on screen to explain it.
 hydrateWithRetry()
 loadRelayCache().catch(e => log('[bulkhead] relay cache load failed:', String(e)))
+
+moveTail()
+setInterval(() => {
+  if (Object.keys(state.containers).length) moveTail()
+}, TAIL_PERIOD_MS)
 
 browser.alarms.create('tick', { periodInMinutes: 0.5 })
 browser.alarms.create('slow', { periodInMinutes: 10 })

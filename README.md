@@ -137,12 +137,19 @@ last wins:
   a Steam link with Firefox closed) is outside the tunnel too. Every Mullvad
   exit stays blocked, and anything unmanaged uses your real connection.
   Close Firefox and start it yourself.
-- **Another proxy extension and preconnects.** A preconnect never reaches
-  Bulkhead's request check. If an extension registered after Bulkhead answers
-  one with `null` or an uppercase `DIRECT`, it leaves on your ordinary
-  connection: a DNS lookup and a TLS connection naming the site, with no HTTP
-  request. A websocket that extension strips does the DNS lookup before it's
-  blocked. Anything else it strips in the container is blocked.
+- **Another proxy extension's first seconds.** A preconnect never reaches
+  Bulkhead's request check, so Bulkhead answers preconnects and websockets
+  again after other extensions, by re-adding a listener every 5 seconds and on
+  page loads in a managed container. For up to 5 seconds after an extension
+  registers, its `null` or uppercase `DIRECT` still sends a preconnect out on
+  your ordinary connection: a DNS lookup and a TLS connection naming the site,
+  with no HTTP request. A websocket it strips in that time does the DNS lookup
+  before it's blocked. An extension that keeps re-adding its own listener keeps
+  getting that time, and so does one stripping a preconnect made as the browser
+  starts, before Bulkhead's background page runs. One that takes more than
+  2 seconds to answer can get through at any time. Anything else it strips in
+  the container is blocked. Firefox doesn't promise this order. A test fails if
+  it changes.
 - **Strict mode off.** A preconnect with no tab and no assigned container on
   its label uses your ordinary connection. That covers the URL bar on a system
   page such as `about:preferences`, and a tab another extension closes as it
@@ -169,6 +176,8 @@ the pref to `false` is still cheap insurance, but Bulkhead doesn't rely on it.
 ```
 proxy.onRequest        container -> [SOCKS5 ProxyInfo, null] from an
                        in-memory map. Runs first. Can assign, cannot block.
+                       A second listener answers preconnects and websockets
+                       again, re-added every 5 s and on page loads to run last.
 
 webRequest.onBefore    decide(state, request + route) -> allow | block.
                        Blocking listener, the only authority.
@@ -196,6 +205,9 @@ with no I/O, clock or browser APIs, so it can be tested exhaustively.
   blocked but not flagged or listed. A takeover in the same millisecond as
   Bulkhead's routing looks the same for that one request. Server checks carry
   no tab, so they can't see a takeover that only touches tabs.
+- **Websockets stay on the container's server.** Another proxy's route on one
+  is overruled by the second listener, with nothing blocked or flagged, unless
+  that proxy registered in the last 5 seconds.
 - **Nothing sits behind the exit.** The proxy list ends in `null`, so a
   refused server fails outright instead of falling back to a system, PAC or
   other extension's proxy.
@@ -275,6 +287,7 @@ with live relays:
 | exit dies with another extension's proxy behind it | fails, server marked `down`, nothing reaches the other proxy |
 | another extension takes Bulkhead's own server check | stopped before it connects, container blocked as "another proxy", not as a dead server |
 | another extension opens a site in a container, or a page in an unmanaged tab preconnects | no connection leaves outside the exit |
+| a stripper added after Bulkhead's preconnect and websocket listener | it wins until that listener moves, then loses, so a change in Firefox's listener order fails the run |
 
 `node test/e2e/transition.mjs --failover-direct=true` is a manual check of
 the moment a tunnel drops: it streams exit checks, disconnects through the

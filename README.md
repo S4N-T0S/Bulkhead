@@ -147,6 +147,11 @@ last wins:
   its label uses your ordinary connection. That covers the URL bar on a system
   page such as `about:preferences`, and a tab another extension closes as it
   opens it.
+- **Closing a window or quitting, on Firefox 153 and later.** A request sent
+  as its window closes never reaches Bulkhead, so it leaves on your ordinary
+  connection with its cookies and Referer. A site can do this on purpose.
+  Closing a tab in a window that stays open is not affected. This is a Firefox
+  bug, reported to Mozilla.
 - **Bulkhead disabled, crashed or uninstalled.** Nothing protects you then.
 
 There is no "leak test" button. Three detectors were built, and all three

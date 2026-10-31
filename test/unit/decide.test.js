@@ -1,7 +1,7 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert')
-const { decide, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_URL } = require('../../src/decide.js')
+const { decide, refusesPreconnect, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_URL } = require('../../src/decide.js')
 
 const TOKEN = 'c0ffee00c0ffee00c0ffee00c0ffee00'
 const PROBE = `${PROBE_URL}?bkh_probe=${TOKEN}`
@@ -618,4 +618,37 @@ test('a probe only counts when it travelled through the assigned server', () => 
   // the default port is implied on both sides or neither
   const noPort = { ip: '127.0.0.1', port: 1080, host: 'custom:y', socksHost: '', custom: true }
   assert.equal(probeTraversed({ host: '127.0.0.1', port: 1080 }, noPort), true)
+})
+
+test('the router refuses a preconnect it cannot place', () => {
+  const spec = (over = {}) => ({ type: 'speculative', tabId: -1, cookieStoreId: 'firefox-default', ...over })
+  const refuses = (s, r) => refusesPreconnect(s, r)
+  const lax = st({ strict: false })
+
+  // only preconnects
+  for (const type of ['main_frame', 'sub_frame', 'xmlhttprequest', 'websocket', 'image']) {
+    assert.equal(refuses(st(), spec({ type, tabId: 1 })), false, type)
+  }
+  // settings not read yet: nothing can be told apart
+  assert.equal(refuses(st({ ready: false, containers: {} }), spec()), true)
+  assert.equal(refuses(st({ ready: false, containers: {}, strict: false }), spec()), true)
+  // labelled with a managed container, whatever its state and either way on Strict
+  for (const c of [UP, DOWN, UNKNOWN, { ...UP, ip: '', port: 0 }]) {
+    assert.equal(refuses(st({ containers: { 'firefox-container-1': c } }), spec({ cookieStoreId: 'firefox-container-1' })), true)
+    assert.equal(refuses(st({ strict: false, containers: { 'firefox-container-1': c } }), spec({ cookieStoreId: 'firefox-container-1' })), true)
+  }
+  // the default label: tabs.update and tabs.create have a tab, the URL bar does not
+  assert.equal(refuses(st(), spec({ tabId: 3 })), true)
+  assert.equal(refuses(st(), spec()), true)
+  assert.equal(refuses(lax, spec({ tabId: 3 })), true)
+  // Strict off lets the tab-less ones use the ordinary connection
+  assert.equal(refuses(lax, spec()), false)
+  // no label at all
+  assert.equal(refuses(st(), spec({ cookieStoreId: undefined })), true)
+  assert.equal(refuses(lax, spec({ cookieStoreId: undefined })), false)
+  // nothing assigned: inert
+  for (const strict of [true, false]) {
+    assert.equal(refuses(st({ strict, containers: {} }), spec()), false)
+    assert.equal(refuses(st({ strict, containers: {} }), spec({ tabId: 3 })), false)
+  }
 })

@@ -107,6 +107,7 @@ interface BlockEntry {
 
 // decide.js
 declare function decide(state: KillswitchState, req: GateRequest): Verdict
+declare function refusesPreconnect(state: KillswitchState, req: { type: string, tabId: number, cookieStoreId?: string }): boolean
 declare function probeToken(url: string): string | null
 declare function isProbeUrl(url: string): boolean
 declare function isLoopbackUrl(url: string): boolean

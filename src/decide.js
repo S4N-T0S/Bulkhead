@@ -196,8 +196,8 @@
     if (state.allowLocal === true && isLoopbackUrl(req.url) && (req.proxyInfo == null || !c)) return v(ALLOW, R.LOOPBACK)
 
     // 3. Speculative connections carry unreliable tab information, so their
-    //    cookieStoreId cannot be trusted. Strict mode refuses to route them
-    //    on a guess.
+    //    cookieStoreId cannot be trusted. A preconnect never gets here, so the
+    //    router uses refusesPreconnect; this is only a backstop.
     if (req.type === 'speculative' && state.strict) return v(BLOCK, R.SPECULATIVE)
 
     // 4. A container we manage. Deliberately checked before the strict-mode
@@ -252,12 +252,25 @@
     return v(ALLOW, R.UNMANAGED)
   }
 
+  // For the router, since a preconnect never reaches the gate. Firefox makes
+  // none on a proxy answer. A preconnect's label can't be trusted: tabs.update
+  // and tabs.create give the caller's context, and the URL bar on a system page
+  // gives the default one. With nothing assigned this stays out of the way.
+  /** @param {KillswitchState} state @param {{ type: string, tabId: number, cookieStoreId?: string }} req @returns {boolean} */
+  function refusesPreconnect (state, req) {
+    if (req.type !== 'speculative') return false
+    if (!state.ready) return true
+    if (req.cookieStoreId && state.containers[req.cookieStoreId]) return true
+    if (Object.keys(state.containers).length === 0) return false
+    return state.strict || req.tabId >= 0
+  }
+
   /** @param {'allow' | 'block'} verdict @param {string} reason @returns {Verdict} */
   function v (verdict, reason) {
     return { verdict, reason }
   }
 
-  const api = { decide, probeToken, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
+  const api = { decide, refusesPreconnect, probeToken, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

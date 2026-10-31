@@ -79,7 +79,8 @@ last wins:
   are marked, since two containers on one server share an IP.
 - **Kill switch.** A container is blocked while its server is down,
   unchecked, or exiting somewhere else. Strict mode (on by default) also
-  blocks requests Firefox can't tie to a container.
+  blocks requests Firefox can't tie to a container, and once anything is
+  assigned, the connections Firefox opens ahead of a page in any tab.
 - **Tunnel exit.** Pin a context to `10.64.0.1` to follow whichever server
   the Mullvad app is connected to. It's unreachable the moment the app
   disconnects.
@@ -136,6 +137,16 @@ last wins:
   a Steam link with Firefox closed) is outside the tunnel too. Every Mullvad
   exit stays blocked, and anything unmanaged uses your real connection.
   Close Firefox and start it yourself.
+- **Another proxy extension and preconnects.** A preconnect never reaches
+  Bulkhead's request check. If an extension registered after Bulkhead answers
+  one with `null` or an uppercase `DIRECT`, it leaves on your ordinary
+  connection: a DNS lookup and a TLS connection naming the site, with no HTTP
+  request. A websocket that extension strips does the DNS lookup before it's
+  blocked. Anything else it strips in the container is blocked.
+- **Strict mode off.** A preconnect with no tab and no assigned container on
+  its label uses your ordinary connection. That covers the URL bar on a system
+  page such as `about:preferences`, and a tab another extension closes as it
+  opens it.
 - **Bulkhead disabled, crashed or uninstalled.** Nothing protects you then.
 
 There is no "leak test" button. Three detectors were built, and all three
@@ -263,6 +274,7 @@ with live relays:
 | another extension takes over a container's route, or strips it | blocked, reason `rerouted`, nothing reaches the other proxy or goes direct |
 | exit dies with another extension's proxy behind it | fails, server marked `down`, nothing reaches the other proxy |
 | another extension takes Bulkhead's own server check | stopped before it connects, container blocked as "another proxy", not as a dead server |
+| another extension opens a site in a container, or a page in an unmanaged tab preconnects | no connection leaves outside the exit |
 
 `node test/e2e/transition.mjs --failover-direct=true` is a manual check of
 the moment a tunnel drops: it streams exit checks, disconnects through the

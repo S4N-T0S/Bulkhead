@@ -25,6 +25,10 @@ const timeoutMs = Number(process.env.E2E_TIMEOUT_MS) || 300_000
 const TRACKER = 'tracker.bulkhead.example'
 // the local exit carries this one to the canary
 const REDIRECTOR = 'redirect.bulkhead.example'
+// these resolve to the leak listener, so a connection there skipped the exit;
+// the local exit carries them to the canary
+const PRECONNECT = 'preconnect.bulkhead.example'
+const PRECONNECTS = ['update', 'create', 'page'].map(name => `${name}.${PRECONNECT}`)
 
 const firefox = await firefoxBinary()
 const tunnel = await detectTunnel()
@@ -62,18 +66,30 @@ const canary = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' })
     return res.end(`<!doctype html><body>${[...Array(12).keys()].map(i => `<img src="https://strip.bulkhead.example/${i}.gif?bulkhead-strip-sub">`).join('')}`)
   }
+  if (req.url === '/preconnect-page') {
+    res.writeHead(200, { 'content-type': 'text/html' })
+    return res.end(`<!doctype html><link rel="preconnect" href="http://page.${PRECONNECT}:${leakPort}/">`)
+  }
   res.writeHead(200, { 'content-type': 'text/plain' })
-  // the selftest's levers on the two listeners below
+  // the selftest's levers on the listeners below
   if (req.url === '/kill-exit') exit.kill()
   if (req.url === '/foreign-hits') return res.end(JSON.stringify(foreignHits))
+  if (req.url === '/preconnects') return res.end(JSON.stringify({ direct: leakConnections, pages: canaryHits.filter(u => u.includes('bulkhead-preconnect')).length, page: canaryHits.includes('/preconnect-page') }))
   res.end('ok')
 })
 await new Promise(r => canary.listen(0, '127.0.0.1', r))
 const canaryPort = /** @type {{ port: number }} */ (canary.address()).port
 
+// A preconnect sends no request, so this counts connections, not hits.
+let leakConnections = 0
+const leak = createServer()
+leak.on('connection', () => leakConnections++)
+await new Promise(r => leak.listen(0, '127.0.0.1', r))
+const leakPort = /** @type {{ port: number }} */ (leak.address()).port
+
 // A local SOCKS exit that actually works, for the cases that need a healthy
 // custom assignment with or without a tunnel.
-const socks = socksServer(undefined, t => t.host === REDIRECTOR ? { host: '127.0.0.1', port: canaryPort } : t)
+const socks = socksServer(undefined, t => t.host === REDIRECTOR || PRECONNECTS.includes(t.host) ? { host: '127.0.0.1', port: canaryPort } : t)
 await new Promise(r => socks.listen(0, '127.0.0.1', r))
 const socksPort = /** @type {{ port: number }} */ (socks.address()).port
 
@@ -90,7 +106,7 @@ const exitPort = /** @type {{ port: number }} */ (exit.address()).port
 
 await writeFile(join(buildDir, 'test-config.js'),
   `globalThis.TEST_TUNNEL = ${tunnel}\nglobalThis.TEST_CANARY_PORT = ${canaryPort}\nglobalThis.TEST_SOCKS_PORT = ${socksPort}\n`
-  + `globalThis.TEST_FOREIGN_PORT = ${foreignPort}\nglobalThis.TEST_EXIT_PORT = ${exitPort}\n`)
+  + `globalThis.TEST_FOREIGN_PORT = ${foreignPort}\nglobalThis.TEST_EXIT_PORT = ${exitPort}\nglobalThis.TEST_LEAK_PORT = ${leakPort}\n`)
 
 const manifestPath = join(buildDir, 'manifest.json')
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
@@ -115,7 +131,8 @@ const args = [
   '--pref=network.proxy.failover_direct=false',
   '--pref=network.trr.mode=5',
   '--pref=privacy.trackingprotection.enabled=true',
-  `--pref=urlclassifier.trackingTable.testEntries=${TRACKER}`
+  `--pref=urlclassifier.trackingTable.testEntries=${TRACKER}`,
+  `--pref=network.dns.localDomains=${PRECONNECTS.join(',')}`
 ]
 
 const child = spawn(process.execPath, args, {
@@ -212,6 +229,7 @@ function evaluate () {
     '[test] L fallback carried=0 completed=false health=down',
     '[test] K flood kept=true swept=true',
     '[test] M tracker early=true completed=false logged=false flagged=false ws=NS_ERROR_ABORT',
+    '[test] N preconnect direct=0 pages=2 page=true',
     '[test] E race notup=true'
   ]
   // the tunnel run raises exactly one offline warning, so pinning the total
@@ -238,6 +256,7 @@ function evaluate () {
     )
   }
   canary.close()
+  leak.close()
   socks.close()
   foreign.kill()
   exit.kill()

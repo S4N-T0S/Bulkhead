@@ -3,7 +3,7 @@
 // re-implement one; this file's job is state, I/O, health and what the user
 // sees. relays.js owns the relay-list logic.
 
-/* global decide, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt */
+/* global decide, refusesPreconnect, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt */
 
 // How long Firefox ignores this proxy after it fails -- a blacklist
 // duration, not a grace period (nsIProtocolProxyService: "the length of time
@@ -210,6 +210,7 @@ browser.proxy.onRequest.addListener((d) => {
     // shortcut would let a web page opt out of the proxy by pasting the
     // marker into a URL.
   }
+  if (refusesPreconnect(state, d)) return [UNROUTABLE, null]
   // Mirrors the gate's loopback opt-in. Under default prefs Firefox refuses
   // to proxy loopback anyway (network.proxy.allow_hijacking_localhost), so
   // this mostly states intent -- but on a profile that flipped that pref, a

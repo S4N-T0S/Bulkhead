@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT */
+/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT */
 
 ;(() => {
   /** @param {string} line */
@@ -413,6 +413,21 @@
     const gated = trkOut.filter(o => o === 'NS_ERROR_ABORT').length
     t(`M tracker early=${trkSeen.size > 1 && [...trkSeen.values()].every(Boolean)} completed=${trkOut.includes('completed')} logged=${blockLog.some(b => b.url.includes('bulkhead-tracker'))} flagged=${rerouted.has(Number(trkTab.id))} ws=${outcomeOf('bulkhead-tracker-ws')} gated=${gated}/${trkOut.length} outcomes=${[...new Set(trkOut)].join(',')}`)
     if (trkTab.id !== undefined) await browser.tabs.remove(trkTab.id).catch(() => null)
+
+    // Firefox preconnects ahead of tabs.update and tabs.create under the
+    // caller's context, which here has no exit. A page in an unmanaged tab has
+    // the label a mislabelled preconnect would, so Strict turns it away too.
+    const preUrl = (/** @type {string} */ how) => `http://${how}.preconnect.bulkhead.example:${TEST_LEAK_PORT}/?bulkhead-preconnect`
+    const preconnects = async () => (await fetch(`http://127.0.0.1:${TEST_CANARY_PORT}/preconnects`)).json()
+    const prePage = await browser.tabs.create({ url: `http://127.0.0.1:${TEST_CANARY_PORT}/preconnect-page`, active: false })
+    const preTab = await browser.tabs.create({ url: 'about:blank', cookieStoreId: trkId, active: false })
+    await browser.tabs.update(Number(preTab.id), { url: preUrl('update') })
+    const preNew = await browser.tabs.create({ url: preUrl('create'), cookieStoreId: trkId, active: false })
+    for (let i = 0; i < 40 && (await preconnects()).pages < 2; i++) await sleep(250)
+    await sleep(1000)
+    const pre = await preconnects()
+    t(`N preconnect direct=${pre.direct} pages=${pre.pages} page=${pre.page}`)
+    await browser.tabs.remove([Number(prePage.id), Number(preTab.id), Number(preNew.id)]).catch(() => null)
     await unassign(trkId)
     await browser.contextualIdentities.remove(trkId).catch(() => null)
 

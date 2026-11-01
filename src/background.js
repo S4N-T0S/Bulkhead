@@ -23,9 +23,6 @@ const RELAY_TTL_MS = 24 * 60 * 60 * 1000
 // connected to, unreachable when the app is off. An assignment to it stores
 // an empty socksHost, which the probe reads as "any Mullvad exit is fine".
 const MULLVAD_DIRECT = { host: 'mullvad-direct', ip: '10.64.0.1', port: 1080 }
-// The in-tunnel endpoint Mullvad's own extension uses. The request never
-// leaves the tunnel, and its failure doubles as a tunnel-down hint.
-const TUNNEL_RELAYS_URL = 'https://n/network/v1-beta1/socks-proxies'
 const PUBLIC_RELAYS_URL = 'https://api.mullvad.net/www/relays/all/'
 // no API for the /servers banner, this is the page data the site loads
 const NOTICES_URL = 'https://mullvad.net/en/__data.json'
@@ -110,8 +107,8 @@ const renamed = Object.create(null)
 /** @type {Map<string, string>} */
 const names = new Map()
 
-/** @type {{ ts: number, source: string, relays: Relay[], offline: OfflineAssignment[] }} */
-let relayMemo = { ts: 0, source: '', relays: [], offline: [] }
+/** @type {{ ts: number, relays: Relay[], offline: OfflineAssignment[] }} */
+let relayMemo = { ts: 0, relays: [], offline: [] }
 // memory only, so an old notice can't come back after a restart
 /** @type {string[]} */
 let relayNotices = []
@@ -1025,15 +1022,9 @@ async function fetchJson (url, timeoutMs) {
 async function refreshRelays (force, wait = false) {
   if (!force && relayMemo.relays.length && Date.now() - relayMemo.ts < RELAY_TTL_MS) return relayMemo
 
-  let relays, source
+  let relays
   try {
-    try {
-      relays = relaylib.adaptTunnel(await fetchJson(TUNNEL_RELAYS_URL, 4000))
-      source = 'tunnel'
-    } catch {
-      relays = relaylib.adaptPublic(await fetchJson(PUBLIC_RELAYS_URL, 20000))
-      source = 'public'
-    }
+    relays = relaylib.adaptPublic(await fetchJson(PUBLIC_RELAYS_URL, 20000))
   } catch (e) {
     // A cached list is better than no picker. This matters most when the
     // default context is itself proxied and its proxy is down: the fetch is
@@ -1045,16 +1036,16 @@ async function refreshRelays (force, wait = false) {
     }
     throw e
   }
-  relayMemo = { ts: Date.now(), source, relays, offline: [] }
+  relayMemo = { ts: Date.now(), relays, offline: [] }
   // The list is already live in memory; failing to cache it is not a failed
   // refresh, and reporting it as one sends the user to check a tunnel that
   // is working.
   try {
-    await browser.storage.local.set({ relayCache: { ts: relayMemo.ts, source, relays } })
+    await browser.storage.local.set({ relayCache: { ts: relayMemo.ts, relays } })
   } catch (e) {
     log('[bulkhead] could not cache the relay list:', e instanceof Error ? e.message : String(e))
   }
-  log(`[bulkhead] relay list: ${relays.length} servers via ${source}`)
+  log(`[bulkhead] relay list: ${relays.length} servers`)
   checkAssignedOffline()
   // random delay so this can't be lined up with a relay check
   if (wait) await refreshNotices()
@@ -1108,11 +1099,8 @@ function refreshRelaysOnFailure (recovering) {
 async function loadRelayCache () {
   const { relayCache } = await browser.storage.local.get('relayCache')
   if (!relayCache || !Array.isArray(relayCache.relays)) return
-  // A list off the network goes through the adapters, which validate every
-  // field; this one comes back from disk and has never been checked since.
-  // Check it as strictly rather than trusting it -- a truncated or
-  // hand-edited entry would otherwise reach the picker and the snapshot
-  // every page reads.
+  // a truncated or hand-edited entry would otherwise reach the picker and
+  // every page's snapshot
   let relays
   try {
     relays = relaylib.fromCache(relayCache.relays)
@@ -1121,7 +1109,7 @@ async function loadRelayCache () {
     await browser.storage.local.remove('relayCache')
     return
   }
-  relayMemo = { ts: relayCache.ts || 0, source: relayCache.source || '', relays, offline: [] }
+  relayMemo = { ts: relayCache.ts || 0, relays, offline: [] }
   checkAssignedOffline()
 }
 
@@ -1131,9 +1119,8 @@ async function checkAssignedOffline () {
   if (!state.ready || !relayMemo.relays.length) return
   const offline = relaylib.offlineAssigned(state.containers, relayMemo.relays)
   relayMemo.offline = offline
-  // Forgotten only once the host is unassigned: the two list sources need
-  // not agree on membership, and a host that flaps between them must not
-  // ring on every refresh.
+  // kept until unassigned, or a host that leaves the list and comes back
+  // notifies on every refresh
   const assigned = new Set(Object.values(state.containers).map(c => c.host))
   for (const host of offlineNotified) {
     if (!assigned.has(host)) offlineNotified.delete(host)
@@ -1445,7 +1432,6 @@ async function getState () {
     blockLog: blockLog.slice(0, 50),
     relays: {
       ts: relayMemo.ts,
-      source: relayMemo.source,
       count: activeRelayCount(),
       offline: relayMemo.offline,
       notices: relayNotices
@@ -1488,7 +1474,7 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
       return { ok: true }
     case 'getRelays': {
       const memo = await refreshRelays(msg.force === true, msg.force === true)
-      return { relays: memo.relays, ts: memo.ts, source: memo.source }
+      return { relays: memo.relays, ts: memo.ts }
     }
     case 'assign':
       return assign(msg.cookieStoreId, msg.host)

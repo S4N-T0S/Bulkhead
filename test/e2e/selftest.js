@@ -101,7 +101,7 @@
     t(`A health=${deadHealth}`)
     if (TEST_TUNNEL) {
       const refreshed = await waitFor(() => relayMemo.relays.length > 0, 30000)
-      t(`A relays refreshed=${refreshed} triggered=${relayRecheckAt > 0} source=${relayMemo.source}`)
+      t(`A relays refreshed=${refreshed} triggered=${relayRecheckAt > 0}`)
     }
 
     const deadTab = await browser.tabs.create({ url: 'https://example.com/?bulkhead-dead', cookieStoreId: deadId, active: false })

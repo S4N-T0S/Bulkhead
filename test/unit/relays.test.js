@@ -2,7 +2,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  adaptPublic, adaptTunnel, fromCache, adaptNotices, searchRelays, groupByLocation, findRelay,
+  adaptPublic, fromCache, adaptNotices, searchRelays, groupByLocation, findRelay,
   alternativeFor, assignedElsewhere, offlineAssigned, mergeAssignments, isTunnelAddress, configKey, renamedTo
 } = require('../../src/relays.js')
 
@@ -67,29 +67,6 @@ test('adaptPublic rejects payloads that are not a usable list', () => {
   assert.throws(() => adaptPublic({ not: 'an array' }))
   assert.throws(() => adaptPublic([]))
   assert.throws(() => adaptPublic([publicEntry({ type: 'openvpn' })]))
-})
-
-test('adaptTunnel maps a plausible socks-proxies shape', () => {
-  const out = adaptTunnel([
-    { name: 'se-got-wg-socks5-001.relays.mullvad.net', port: 1080, country: 'Sweden', city: 'Gothenburg' },
-    { name: 'de-fra-wg-socks5-002.relays.mullvad.net', port: 1080, country: 'Germany', city: 'Frankfurt' }
-  ])
-  assert.equal(out.length, 2)
-  assert.equal(out[1].host, 'se-got-wg-001')
-  assert.equal(out[1].socksHost, 'se-got-wg-socks5-001')
-  assert.equal(out[0].cc, 'de')
-  assert.equal(out[1].cc, 'se')
-})
-
-test('adaptTunnel throws when the shape drifts', () => {
-  assert.throws(() => adaptTunnel('nope'))
-  assert.throws(() => adaptTunnel([{ foo: 1 }, { bar: 2 }]))
-  // half the entries unusable -> refuse the truncated world
-  assert.throws(() => adaptTunnel([
-    { name: 'se-got-wg-socks5-001.relays.mullvad.net' },
-    { name: 'garbage' },
-    { name: 'more-garbage' }
-  ]))
 })
 
 const LIST = adaptPublic([

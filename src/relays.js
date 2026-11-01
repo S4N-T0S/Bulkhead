@@ -1,8 +1,6 @@
 'use strict'
-// Relay-list handling, kept pure so it can be tested without a browser:
-// adapters from the two Mullvad endpoints to one canonical shape, plus the
-// selection and bookkeeping helpers built on it. All fetching happens in
-// background.js.
+// Parses Mullvad's relay list and the cache into one shape, plus helpers.
+// No browser APIs so it can be unit tested. Fetching is in background.js.
 //
 // Canonical relay: { host, socksName, socksHost, socksPort, cc, country,
 // city, active, owned, speed, messages }. socksHost is the first label of
@@ -66,46 +64,6 @@
       })
     }
     if (!out.length) throw new Error('relay list: no usable relays')
-    return sortRelays(out)
-  }
-
-  /**
-   * The in-tunnel endpoint Mullvad's own extension uses,
-   * https://n/network/v1-beta1/socks-proxies. Unofficial and undocumented,
-   * so this maps what it can and throws when the shape doesn't hold --
-   * background.js falls back to the public list on any failure.
-   * @param {unknown} json
-   * @returns {Relay[]}
-   */
-  function adaptTunnel (json) {
-    if (!Array.isArray(json)) throw new Error('socks-proxies: expected an array')
-    /** @type {Relay[]} */
-    const out = []
-    for (const r of json) {
-      if (!r || typeof r !== 'object') continue
-      const e = /** @type {Record<string, unknown>} */ (r)
-      const socksName = str(e.name) || str(e.socks_name) || str(e.hostname)
-      const socksHost = socksName.split('.')[0]
-      if (!SOCKS_RE.test(socksHost)) continue
-      out.push({
-        host: socksHost.replace('-socks5', ''),
-        socksName,
-        socksHost,
-        socksPort: port(e.port ?? e.socks_port),
-        // the validated name pattern starts with the ISO code; the payload's
-        // own location fields are less trustworthy than that
-        cc: socksHost.slice(0, 2),
-        country: str(e.country_name ?? e.country),
-        city: str(e.city_name ?? e.city),
-        active: e.online !== false && e.active !== false,
-        owned: e.owned === true || e.ownership === 'owned',
-        speed: num(e.network_port_speed ?? e.speed, 0),
-        messages: []
-      })
-    }
-    // A half-empty mapping means the schema drifted; better to use the
-    // public list than to show a truncated world.
-    if (out.length < json.length / 2 || !out.length) throw new Error('socks-proxies: unrecognised shape')
     return sortRelays(out)
   }
 
@@ -399,7 +357,6 @@
 
   const api = {
     adaptPublic,
-    adaptTunnel,
     fromCache,
     adaptNotices,
     searchRelays,

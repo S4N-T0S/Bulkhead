@@ -87,13 +87,19 @@ last wins:
 - **No container and private windows** can each get a server, or stay
   direct. Private windows need Run in Private Windows allowed in
   about:addons. Pinning the no-container context also covers Bulkhead's own
-  server-list fetch.
+  server-list and status-message fetches.
 - **Custom exits**: your own SOCKS5 servers (an SSH tunnel, a VPS), with
   the same checks. Bulkhead can't vouch for where a foreign server exits,
   and says so.
 - **Retired servers**: the list refreshes daily. If your server leaves it,
   you get a warning and a one-click move to an unused one in the same city
   or country.
+- **Notices from Mullvad**: the settings page shows Mullvad's status messages
+  about its servers under the server list, labelled From Mullvad. They're
+  fetched with each list refresh and once a session when settings opens, with
+  a random delay right after browser start. Mullvad has no published API for
+  these, so Bulkhead reads the site's page data. If that changes they stop
+  appearing.
 - **Blocked page** naming the container, the reason and the requested
   address, instead of a blank network error.
 - **Toolbar badge**: nothing when verified, `?` while checking, `!` when
@@ -278,6 +284,7 @@ with live relays:
 | wrong exit configured | `misrouted`, blocked |
 | nothing managed | extension inert |
 | no container on the tunnel exit, tunnel down | tabs and the server-list fetch blocked |
+| no container on a custom exit, status-message fetch | carried by the exit, no cookie sent |
 | no container on the tunnel exit, tunnel up | verified, traffic passes |
 | hardening on, then off | applied, then fully restored |
 | loopback from a blocked container | blocked with the toggle off, reaches a local server with it on |
@@ -314,7 +321,11 @@ want.
 
 By [S4N-T0S](https://s4nt0s.eu). Flags from
 [circle-flags](https://github.com/HatScripts/circle-flags) (MIT), vendored in
-`src/flags/`. "Mullvad" is used only to describe compatibility.
+`src/flags/`. Mullvad icon from
+[mullvadvpn-app](https://github.com/mullvad/mullvadvpn-app) (GPL-3.0-or-later),
+unmodified, in `src/icons/mullvad.svg`. The Mullvad name and icon belong to Mullvad
+VPN AB. Bulkhead uses the name to say what it works with and the icon to mark the
+Mullvad server list. It is not affiliated with or endorsed by them.
 
 ## License
 

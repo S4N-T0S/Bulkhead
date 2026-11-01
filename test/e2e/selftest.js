@@ -7,13 +7,17 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, moveTail, tail, tailMovedAt, tailFrame, tailFrameLoading, tailFrameMoves:writable, TAIL_FRAME_MOVES, TAIL_FRAME_LOAD_MS, TAIL_OVERLAP_MS, TAIL_PERIOD_MS, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT, nextProbeAt, PROBE_INTERVAL_DOWN_MS */
+/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, moveTail, tail, tailMovedAt, tailFrame, tailFrameLoading, tailFrameMoves:writable, TAIL_FRAME_MOVES, TAIL_FRAME_LOAD_MS, TAIL_OVERLAP_MS, TAIL_PERIOD_MS, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, refreshNotices, settingsOpened, noticesAsked:writable, installOpened:writable, fetchJson:writable, NOTICES_URL, PROBE_SPREAD_MS, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT, nextProbeAt, PROBE_INTERVAL_DOWN_MS */
 
 ;(() => {
   /** @param {string} line */
   const t = line => log(`[test] ${line}`)
   /** @param {number} ms */
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+  // skip the start-up wait, a fetch from the install tab would show right away
+  const realNow = performance.now
+  performance.now = () => Infinity
 
   // The block log is written before the listener returns, so asserting on it
   // proves the decision, not the outcome -- swap the return for {} and it
@@ -54,6 +58,13 @@
   async function run () {
     t('begin')
     await waitFor(() => state.ready, 8000)
+
+    // the install tab reports in but doesn't fetch
+    const installTab = () => browser.extension.getViews({ type: 'tab' }).some(v => v.location.pathname.endsWith('/options/options.html') && v.document.readyState === 'complete')
+    await waitFor(installTab, 8000)
+    await sleep(1000)
+    performance.now = realNow
+    t(`P install tab=${installTab()} reported=${!installOpened} asked=${noticesAsked}`)
 
     // No managed containers yet: the extension must be inert for a normal
     // tab. Its request must pass and leave no trace in the block log.
@@ -693,11 +704,110 @@
       }
       const selfHit = blockLog.find(b => b.container === 'firefox-default' && b.url.includes('mullvad.net'))
       t(`D self-fetch blocked=${selfFetchThrew && Boolean(selfHit)}`)
+      t(`D self-fetch notices=${blockLog.some(b => b.url.includes('__data.json'))}`)
     } else {
       t(`D health=${defC && defC.health} passed=${!defHit}`)
     }
     if (defTab.id !== undefined) await browser.tabs.remove(defTab.id)
     await unassign('firefox-default')
+    await sleep(1000)
+
+    // status messages go through the exit when pinned, no cookies sent
+    const noticeCx = await saveCustomExit({ label: 'e2e notices', host: '127.0.0.1', port: TEST_FOREIGN_PORT })
+    await assign('firefox-default', `custom:${noticeCx.id}`)
+    if (!await waitFor(() => Boolean(state.containers['firefox-default'] && state.containers['firefox-default'].health === 'up'), 60000)) {
+      t(`FAIL P exit never verified: ${JSON.stringify(state.containers['firefox-default'])}`)
+    }
+    // a list refresh just before this can still have its fetch waiting
+    await sleep(Math.max(0, relayMemo.ts + PROBE_SPREAD_MS + 1000 - Date.now()))
+    /** @type {string[][]} */
+    const noticeHeaders = []
+    /** @param {browser.webRequest._OnBeforeSendHeadersDetails} d */
+    const noticeListener = (d) => {
+      noticeHeaders.push((d.requestHeaders || []).map(h => h.name.toLowerCase()))
+    }
+    browser.webRequest.onBeforeSendHeaders.addListener(noticeListener, { urls: ['https://mullvad.net/en/__data.json'] }, ['requestHeaders'])
+    await browser.cookies.set({ url: 'https://mullvad.net/', name: 'bulkhead_e2e', value: '1' })
+    const noticeBefore = await carried('mullvad.net')
+    await refreshNotices()
+    t(`P notices carried=${await carried('mullvad.net') > noticeBefore} requests=${noticeHeaders.length} cookie=${noticeHeaders.flat().includes('cookie')} origin=${noticeHeaders.flat().includes('origin')} logged=${blockLog.some(b => b.url.includes('__data.json'))}`)
+    browser.webRequest.onBeforeSendHeaders.removeListener(noticeListener)
+    await browser.cookies.remove({ url: 'https://mullvad.net/', name: 'bulkhead_e2e' })
+
+    // fake notices answer from here on, list fetches stay real
+    const realFetchJson = fetchJson
+    let noticeAsks = 0
+    let noticeText = 'e2e first'
+    /** @param {string} url @param {number} ms */
+    fetchJson = async (url, ms) => {
+      if (url !== NOTICES_URL) return realFetchJson(url, ms)
+      noticeAsks++
+      await sleep(500)
+      if (!noticeText) throw new Error('e2e')
+      return { type: 'data', nodes: [{ type: 'data', data: [{ statusMessages: 1 }, [2], { text: 3, display_area: 4 }, noticeText, 'SERVERS'] }] }
+    }
+
+    noticesAsked = false
+    noticeAsks = 0
+    await Promise.all([settingsOpened(), settingsOpened()])
+    await settingsOpened()
+    const askedOnce = noticeAsks === 1
+    noticesAsked = false
+    installOpened = true
+    await settingsOpened()
+    const skippedInstall = noticeAsks === 1 && !installOpened
+    const noticeExit = state.containers['firefox-default']
+    const noticeHealth = noticeExit.health
+    for (const health of ['unknown', 'down', 'misrouted', 'taken', undefined]) {
+      noticesAsked = false
+      noticeExit.health = health
+      await settingsOpened()
+    }
+    noticeExit.health = noticeHealth
+    const skippedNotUp = noticeAsks === 1 && !noticesAsked
+    state.ready = false
+    await settingsOpened()
+    state.ready = true
+    const skippedNotReady = noticeAsks === 1 && !noticesAsked
+
+    // waits right after browser start, 2 s here
+    const realRandom = Math.random
+    Math.random = () => 0.1
+    performance.now = () => 0
+    noticeAsks = 0
+    const spreadAsk = settingsOpened()
+    Math.random = realRandom
+    performance.now = realNow
+    await sleep(1000)
+    const spreadHeld = noticeAsks === 0
+    await spreadAsk
+    t(`P settings once=${askedOnce} install=${skippedInstall} notup=${skippedNotUp} notready=${skippedNotReady} spread=${spreadHeld && noticeAsks === 1}`)
+
+    // page asks on open and shows the answer
+    noticesAsked = false
+    noticeAsks = 0
+    noticeText = 'e2e page'
+    const pageTab = await browser.tabs.create({ url: browser.runtime.getURL('options/options.html') })
+    const pageDoc = () => browser.extension.getViews({ tabId: pageTab.id }).map(v => v.document)[0]
+    const pageBanner = () => {
+      const el = pageDoc() && pageDoc().getElementById('relay-notices')
+      return el ? el.textContent : null
+    }
+    const pageAsked = await waitFor(() => noticeAsks === 1, 8000)
+    const pageShown = await waitFor(() => pageBanner() === 'From Mullvad: “e2e page”', 8000)
+    noticeText = ''
+    await refreshNotices()
+    const pageCleared = await waitFor(() => pageBanner() === '', 8000)
+    t(`P page asked=${pageAsked} shown=${pageShown} cleared=${pageCleared}`)
+    if (pageTab.id !== undefined) await browser.tabs.remove(pageTab.id)
+
+    await unassign('firefox-default')
+    await waitFor(() => !state.containers['firefox-default'], 5000)
+    noticesAsked = false
+    noticeAsks = 0
+    await settingsOpened()
+    t(`P unpinned=${noticeAsks === 1}`)
+    fetchJson = realFetchJson
     await sleep(1000)
 
     if (!TEST_TUNNEL) {

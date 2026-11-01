@@ -262,7 +262,12 @@ function evaluate () {
     '[test] O unmanaged foreign=true',
     '[test] O load ws=true logged=false moved=true',
     '[test] O limit rate=true sub=true unmanaged=true',
-    '[test] E race notup=true'
+    '[test] E race notup=true',
+    '[test] P install tab=true reported=true asked=false',
+    '[test] P notices carried=true requests=1 cookie=false origin=false logged=false',
+    '[test] P settings once=true install=true notup=true notready=true spread=true',
+    '[test] P page asked=true shown=true cleared=true',
+    '[test] P unpinned=true'
   ]
   // the tunnel run raises exactly one offline warning, so pinning the total
   // proves the hook intercepts rather than just staying quiet
@@ -282,6 +287,7 @@ function evaluate () {
       '[test] D cancelled=true',
       '[test] D blockedpage shown=true',
       '[test] D self-fetch blocked=true',
+      '[test] D self-fetch notices=false',
       '[test] SKIP B (no tunnel)',
       '[test] SKIP C (no tunnel)',
       '[test] SKIP H (no tunnel)'

@@ -144,6 +144,49 @@
     return sortRelays(out)
   }
 
+  // no PAYMENT, and nothing we haven't seen yet
+  const NOTICE_AREAS = new Set(['EVERYWHERE', 'SERVERS'])
+  const NOTICE_MAX = 3
+  const NOTICE_MAX_LEN = 500
+  // entries can all point at one huge string, so don't read many
+  const NOTICE_MAX_READ = 32
+
+  /**
+   * Status messages from mullvad.net's page data, the banner on /servers.
+   * SvelteKit internals, no published API, so throws if the shape changes.
+   * Values in `data` are indexes into `data` (devalue format).
+   * @param {unknown} json
+   * @returns {string[]} [] if no message is up
+   */
+  function adaptNotices (json) {
+    const nodes = json && typeof json === 'object' && 'nodes' in json ? json.nodes : undefined
+    if (!Array.isArray(nodes)) throw new Error('notices: expected page nodes')
+    for (const node of nodes) {
+      const data = node && typeof node === 'object' ? node.data : undefined
+      if (!Array.isArray(data)) continue
+      const root = data[0]
+      if (!root || typeof root !== 'object' || !('statusMessages' in root)) continue
+      /** @param {unknown} i @returns {unknown} */
+      const at = i => Number.isInteger(i) && Number(i) >= 0 ? data[Number(i)] : undefined
+      // devalue's undefined
+      if (root.statusMessages === -1) return []
+      const list = at(root.statusMessages)
+      if (!Array.isArray(list)) throw new Error('notices: unrecognised shape')
+      const out = []
+      for (const i of list.slice(0, NOTICE_MAX_READ)) {
+        const m = /** @type {Record<string, unknown>} */ (at(i) || {})
+        const text = at(m.text)
+        const area = at(m.display_area)
+        if (typeof text !== 'string' || typeof area !== 'string') throw new Error('notices: unrecognised shape')
+        const clean = text.trim()
+        if (!clean || !NOTICE_AREAS.has(area)) continue
+        out.push(clean.length > NOTICE_MAX_LEN ? `${clean.slice(0, NOTICE_MAX_LEN)}…` : clean)
+      }
+      return out.slice(0, NOTICE_MAX)
+    }
+    throw new Error('notices: no status messages in the page data')
+  }
+
   /** @param {Relay[]} relays @returns {Relay[]} */
   function sortRelays (relays) {
     return relays.slice().sort((a, b) =>
@@ -358,6 +401,7 @@
     adaptPublic,
     adaptTunnel,
     fromCache,
+    adaptNotices,
     searchRelays,
     groupByLocation,
     findRelay,

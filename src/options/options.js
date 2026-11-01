@@ -501,9 +501,23 @@
   function renderRelayMeta () {
     if (!snapshot) return
     const { count, source, ts } = snapshot.relays
-    $('relay-meta').textContent = count
-      ? `${count} active servers · ${source === 'tunnel' ? 'in-tunnel API' : 'public API'} · ${fmt.timeAgo(ts, Date.now())}`
-      : 'not fetched yet'
+    const via = source === 'tunnel' ? 'via the tunnel' : source === 'public' ? 'via public API' : ''
+    const age = fmt.timeAgo(ts, Date.now())
+    // nbsp so a wrapped line doesn't start with a dot
+    $('relay-meta').textContent = ts
+      ? [`${count} active servers`, via, age && `updated ${age}`].filter(Boolean).join('\u00a0· ')
+      : 'Not fetched yet. Loads when you choose a server.'
+
+    const notices = $('relay-notices')
+    notices.textContent = ''
+    for (const text of snapshot.relays.notices) {
+      const b = document.createElement('div')
+      b.className = 'banner'
+      const from = document.createElement('strong')
+      from.textContent = 'From Mullvad:'
+      b.append(from, ` “${text}”`)
+      notices.append(b)
+    }
   }
 
   $('refresh-relays').addEventListener('click', async () => {
@@ -688,6 +702,9 @@
   }
 
   refresh().then(renderHardening).catch(refreshFailed)
+  browser.runtime.sendMessage({ cmd: 'settingsOpened' })
+    .then(() => dialog.open ? undefined : refresh())
+    .catch(() => null)
   setInterval(() => {
     if (!dialog.open) refresh().catch(refreshFailed)
   }, 5000)

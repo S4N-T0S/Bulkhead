@@ -2,7 +2,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  adaptPublic, adaptTunnel, fromCache, searchRelays, groupByLocation, findRelay,
+  adaptPublic, adaptTunnel, fromCache, adaptNotices, searchRelays, groupByLocation, findRelay,
   alternativeFor, assignedElsewhere, offlineAssigned, mergeAssignments, isTunnelAddress, configKey, renamedTo
 } = require('../../src/relays.js')
 
@@ -327,4 +327,85 @@ test('fromCache takes back exactly what was cached and nothing looser', () => {
   assert.throws(() => fromCache([publicEntry()]))
   assert.throws(() => fromCache('nope'))
   assert.deepEqual(fromCache([...LIST, null, { host: 'net<script>' }, { ...LIST[0], socksHost: 'bad' }, { ...LIST[0], socksName: '' }]), LIST)
+})
+
+function pageData (messages) {
+  const data = [{ locale: 1, me: -1, settings: -1, metadata: -1, statusMessages: 2 }, 'en', []]
+  for (const [text, area] of messages) {
+    data[2].push(data.length)
+    data.push({ text: data.length + 1, display_area: data.length + 2 }, text, area)
+  }
+  return { type: 'data', nodes: [null, { type: 'data', data, uses: { route: 1 } }, { type: 'data', data: [{ os: 1 }, 'windows'], uses: {} }] }
+}
+
+test('adaptNotices reads payloads captured from mullvad.net', () => {
+  const home = JSON.parse('{"type":"data","nodes":[null,{"type":"data","data":[{"locale":1,"me":-1,"settings":-1,"metadata":-1,"statusMessages":2},"en",[3],{"text":4,"display_area":5},"Relays are being upgraded, it should be roughly 15 minutes of downtime per server.","SERVERS"],"uses":{"route":1}},{"type":"data","data":[{"os":1},"windows"],"uses":{}}]}')
+  assert.deepEqual(adaptNotices(home), ['Relays are being upgraded, it should be roughly 15 minutes of downtime per server.'])
+  const skipped = JSON.parse('{"type":"data","nodes":[{"type":"skip"},{"type":"data","data":[{"locale":1,"me":-1,"settings":-1,"metadata":-1,"statusMessages":2},"en",[3],{"text":4,"display_area":5},"Upgrading.","SERVERS"],"uses":{"route":1}},{"type":"skip"},{"type":"skip"}]}')
+  assert.deepEqual(adaptNotices(skipped), ['Upgrading.'])
+  const later = pageData([['Upgrading.', 'SERVERS']])
+  later.nodes.reverse()
+  assert.deepEqual(adaptNotices(later), ['Upgrading.'])
+})
+
+test('adaptNotices keeps EVERYWHERE and SERVERS only', () => {
+  assert.deepEqual(adaptNotices(pageData([
+    ['For everyone.', 'EVERYWHERE'],
+    ['Card payments are down.', 'PAYMENT'],
+    ['For the servers page.', 'SERVERS'],
+    ['An area added later.', 'BLOG']
+  ])), ['For everyone.', 'For the servers page.'])
+})
+
+test('adaptNotices returns [] for no message, throws on a broken route', () => {
+  assert.deepEqual(adaptNotices(pageData([])), [])
+  const none = pageData([])
+  none.nodes[1].data[0].statusMessages = -1
+  assert.deepEqual(adaptNotices(none), [])
+  for (const bad of [
+    null,
+    'nope',
+    [],
+    {},
+    { type: 'redirect', location: '/en/' },
+    { type: 'data', nodes: 'x' },
+    { type: 'data', nodes: [] },
+    { type: 'data', nodes: [null, { type: 'skip' }] },
+    { type: 'data', nodes: [{ type: 'data', data: [{ os: 1 }, 'windows'] }] }
+  ]) assert.throws(() => adaptNotices(bad), /notices/, JSON.stringify(bad))
+})
+
+test('adaptNotices throws on bad indexes and values', () => {
+  const drift = (fn) => {
+    const p = pageData([['Upgrading.', 'SERVERS']])
+    fn(p.nodes[1].data)
+    return p
+  }
+  for (const fn of [
+    (d) => { d[0].statusMessages = 99 },
+    (d) => { d[0].statusMessages = -2 },
+    (d) => { d[0].statusMessages = 1.5 },
+    (d) => { d[0].statusMessages = '2' },
+    (d) => { d[0].statusMessages = 1 },
+    (d) => { d[2] = [99] },
+    (d) => { d[2] = [1] },
+    (d) => { d[2] = [null] },
+    (d) => { d[3].text = 2 },
+    (d) => { d[3].text = -1 },
+    (d) => { d[3].display_area = 0 },
+    (d) => { delete d[3].text },
+    (d) => { d[4] = { nested: true } }
+  ]) assert.throws(() => adaptNotices(drift(fn)), /notices/, fn.toString())
+})
+
+test('adaptNotices trims, caps and keeps markup as text', () => {
+  assert.deepEqual(adaptNotices(pageData([['  Spaced.  ', 'SERVERS'], ['   ', 'SERVERS']])), ['Spaced.'])
+  assert.deepEqual(adaptNotices(pageData([['<img src=x onerror=alert(1)>', 'SERVERS']])), ['<img src=x onerror=alert(1)>'])
+  const [long] = adaptNotices(pageData([['x'.repeat(5000), 'SERVERS']]))
+  assert.equal(long, `${'x'.repeat(500)}…`)
+  assert.deepEqual(adaptNotices(pageData([['x'.repeat(500), 'SERVERS']])), ['x'.repeat(500)])
+  assert.equal(adaptNotices(pageData([['1', 'SERVERS'], ['2', 'SERVERS'], ['3', 'SERVERS'], ['4', 'SERVERS']])).length, 3)
+  const blanks = Array.from({ length: 32 }, () => [' ', 'SERVERS'])
+  assert.deepEqual(adaptNotices(pageData([...blanks.slice(1), ['Last read.', 'SERVERS']])), ['Last read.'])
+  assert.deepEqual(adaptNotices(pageData([...blanks, ['Too far.', 'SERVERS']])), [])
 })

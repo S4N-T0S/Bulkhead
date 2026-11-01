@@ -1,0 +1,10 @@
+mullvad.svg is graphics/icon.svg from mullvad/mullvadvpn-app
+(https://github.com/mullvad/mullvadvpn-app), used unmodified.
+
+Copyright (C) 2026 Mullvad VPN AB. Licensed under the GNU General Public License,
+either version 3 of the License, or (at your option) any later version. Version 3
+is reproduced in ../LICENSE.
+
+The Mullvad name and icon belong to Mullvad VPN AB. Bulkhead uses the name to say
+what it works with and the icon to mark the Mullvad server list. It is not
+affiliated with or endorsed by them.

@@ -27,6 +27,8 @@ const MULLVAD_DIRECT = { host: 'mullvad-direct', ip: '10.64.0.1', port: 1080 }
 // leaves the tunnel, and its failure doubles as a tunnel-down hint.
 const TUNNEL_RELAYS_URL = 'https://n/network/v1-beta1/socks-proxies'
 const PUBLIC_RELAYS_URL = 'https://api.mullvad.net/www/relays/all/'
+// no API for the /servers banner, this is the page data the site loads
+const NOTICES_URL = 'https://mullvad.net/en/__data.json'
 const BLOCK_LOG_MAX = 200
 const BLOCK_LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -110,6 +112,12 @@ const names = new Map()
 
 /** @type {{ ts: number, source: string, relays: Relay[], offline: OfflineAssignment[] }} */
 let relayMemo = { ts: 0, source: '', relays: [], offline: [] }
+// memory only, so an old notice can't come back after a restart
+/** @type {string[]} */
+let relayNotices = []
+let noticesAsked = false
+// the settings tab we open on install doesn't count
+let installOpened = false
 
 // Mirrored to stdout when browser.dom.window.dump.enabled is set, so the
 // e2e runner can capture decisions without a human at the Browser Console.
@@ -1013,8 +1021,8 @@ async function fetchJson (url, timeoutMs) {
   return res.json()
 }
 
-/** @param {boolean} force @returns {Promise<typeof relayMemo>} */
-async function refreshRelays (force) {
+/** @param {boolean} force @param {boolean} [wait] wait for the status messages too @returns {Promise<typeof relayMemo>} */
+async function refreshRelays (force, wait = false) {
   if (!force && relayMemo.relays.length && Date.now() - relayMemo.ts < RELAY_TTL_MS) return relayMemo
 
   let relays, source
@@ -1048,7 +1056,35 @@ async function refreshRelays (force) {
   }
   log(`[bulkhead] relay list: ${relays.length} servers via ${source}`)
   checkAssignedOffline()
+  // random delay so this can't be lined up with a relay check
+  if (wait) await refreshNotices()
+  else setTimeout(refreshNotices, Math.random() * PROBE_SPREAD_MS)
   return relayMemo
+}
+
+async function refreshNotices () {
+  // would only get blocked, next try can ask again
+  const def = state.containers['firefox-default']
+  if (!state.ready || (def && def.health !== 'up')) return
+  noticesAsked = true
+  try {
+    relayNotices = relaylib.adaptNotices(await fetchJson(NOTICES_URL, 8000))
+  } catch (e) {
+    // undocumented route, so just no banner
+    relayNotices = []
+    log('[bulkhead] no status messages:', e instanceof Error ? e.message : String(e))
+  }
+}
+
+// banner is empty after a restart, so ask once when settings is opened
+async function settingsOpened () {
+  if (installOpened) {
+    installOpened = false
+    return
+  }
+  // restored tab at browser start, don't fire with the startup checks
+  if (performance.now() < PROBE_SPREAD_MS) await new Promise(resolve => setTimeout(resolve, Math.random() * PROBE_SPREAD_MS))
+  if (!noticesAsked) await refreshNotices()
 }
 
 // A relay failing may mean a retired server, which the daily refresh alone
@@ -1411,7 +1447,8 @@ async function getState () {
       ts: relayMemo.ts,
       source: relayMemo.source,
       count: activeRelayCount(),
-      offline: relayMemo.offline
+      offline: relayMemo.offline,
+      notices: relayNotices
     },
     privateAllowed,
     renamed: { ...renamed },
@@ -1446,8 +1483,11 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
   switch (msg.cmd) {
     case 'getState':
       return getState()
+    case 'settingsOpened':
+      await settingsOpened()
+      return { ok: true }
     case 'getRelays': {
-      const memo = await refreshRelays(msg.force === true)
+      const memo = await refreshRelays(msg.force === true, msg.force === true)
       return { relays: memo.relays, ts: memo.ts, source: memo.source }
     }
     case 'assign':
@@ -1511,5 +1551,8 @@ function randomToken () {
 browser.runtime.onInstalled.addListener(({ reason }) => {
   // The two prefs no extension can set are what close the remaining leak;
   // that conversation happens on install, not buried in a README.
-  if (reason === 'install') browser.runtime.openOptionsPage()
+  if (reason === 'install') {
+    installOpened = true
+    browser.runtime.openOptionsPage()
+  }
 })

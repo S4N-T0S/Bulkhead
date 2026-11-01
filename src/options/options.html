@@ -173,11 +173,14 @@
 
   <section class="card">
     <div class="row">
-      <h2>Server list</h2>
-      <span class="grow"></span>
-      <span id="relay-meta" class="sub"></span>
+      <img class="relay-icon" src="../icons/mullvad.svg" width="18" height="18" alt="">
+      <div class="grow row wrap relay-label">
+        <h2>Mullvad server list</h2>
+        <span id="relay-meta" class="sub"></span>
+      </div>
       <button id="refresh-relays">Refresh</button>
     </div>
+    <div id="relay-notices"></div>
   </section>
 
   <section class="card">
@@ -227,7 +230,7 @@
     <span>·</span>
     <span>GPL-3.0</span>
     <span>·</span>
-    <span>not affiliated with Mullvad AB</span>
+    <span>not affiliated with Mullvad VPN AB</span>
     <span class="grow"></span>
     <a href="https://s4nt0s.eu" target="_blank" rel="noreferrer">by S4N-T0S</a>
   </footer>

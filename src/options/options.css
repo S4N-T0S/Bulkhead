@@ -120,6 +120,11 @@ dialog .picker-list { max-height: 46vh; }
 #picker-error:empty { display: none; }
 #picker-error { margin-top: 10px; }
 
+.relay-icon { flex: none; }
+.relay-label { row-gap: 0; align-items: baseline; }
+#relay-notices:empty { display: none; }
+#relay-notices { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; overflow-wrap: anywhere; }
+
 #custom-list:empty { display: none; }
 #custom-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .custom-exit {

@@ -140,6 +140,7 @@ declare var relaylib: {
   adaptPublic(json: unknown): Relay[]
   adaptTunnel(json: unknown): Relay[]
   fromCache(json: unknown): Relay[]
+  adaptNotices(json: unknown): string[]
   searchRelays(relays: Relay[], q: string, f?: { ownedOnly?: boolean }): Relay[]
   groupByLocation(relays: Relay[]): { cc: string, country: string, cities: { city: string, relays: Relay[] }[] }[]
   findRelay(relays: Relay[], host: string): Relay | undefined
@@ -196,7 +197,7 @@ interface StateSnapshot {
   /** Credentials are stripped before a config leaves the background page */
   containers: Record<string, Omit<ContainerConfig, 'password'>>
   blockLog: BlockEntry[]
-  relays: { ts: number, source: string, count: number, offline: OfflineAssignment[] }
+  relays: { ts: number, source: string, count: number, offline: OfflineAssignment[], notices: string[] }
   renamed: Record<string, string>
   /** Where another proxy last took a container's request, '' for no proxy */
   rerouted: Record<string, { via: string, at: number }>

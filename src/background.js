@@ -1120,7 +1120,7 @@ function refreshRelaysOnFailure (recovering) {
 
 async function loadRelayCache () {
   const { relayCache } = await browser.storage.local.get('relayCache')
-  if (!relayCache || !Array.isArray(relayCache.relays)) return
+  if (relayCache === undefined) return
   // a truncated or hand-edited entry would otherwise reach the picker and
   // every page's snapshot
   let relays

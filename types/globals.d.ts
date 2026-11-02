@@ -139,6 +139,7 @@ declare const PROBE_URL: string
 declare var relaylib: {
   adaptPublic(json: unknown): Relay[]
   fromCache(json: unknown): Relay[]
+  lostMostActive(next: Relay[], current: Relay[]): boolean
   adaptNotices(json: unknown): string[]
   searchRelays(relays: Relay[], q: string, f?: { ownedOnly?: boolean }): Relay[]
   groupByLocation(relays: Relay[]): { cc: string, country: string, cities: { city: string, relays: Relay[] }[] }[]

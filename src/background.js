@@ -19,6 +19,8 @@ const PROBE_TIMEOUT_MS = 10000
 // Only a mis-carry that repeats is evidence worth convicting on.
 const RECHECK_DELAY_MS = FAILOVER_SECONDS * 1000 + 1000
 const RELAY_TTL_MS = 24 * 60 * 60 * 1000
+// the servers may really be gone, so don't refuse a short list forever
+const RELAY_SHRINK_WAIT_MS = 7 * 24 * 60 * 60 * 1000
 // Mullvad's in-tunnel SOCKS endpoint: exits at whatever server the app is
 // connected to, unreachable when the app is off. An assignment to it stores
 // an empty socksHost, which the probe reads as "any Mullvad exit is fine".
@@ -1041,6 +1043,10 @@ async function refreshRelays (force, wait = false) {
   let relays
   try {
     relays = relaylib.adaptPublic(await fetchJson(PUBLIC_RELAYS_URL, 20000, RELAYS_MAX_BYTES))
+    // would flag most assigned servers as retired
+    if (relaylib.lostMostActive(relays, relayMemo.relays) && Date.now() - relayMemo.ts < RELAY_SHRINK_WAIT_MS) {
+      throw new Error(`relay list: ${relays.length} servers, most of the active ones gone`)
+    }
   } catch (e) {
     // A cached list is better than no picker. This matters most when the
     // default context is itself proxied and its proxy is down: the fetch is
@@ -1125,7 +1131,9 @@ async function loadRelayCache () {
     await browser.storage.local.remove('relayCache')
     return
   }
-  relayMemo = { ts: relayCache.ts || 0, relays, offline: [] }
+  // a time in the future would never go stale
+  const ts = Number.isFinite(relayCache.ts) && relayCache.ts <= Date.now() ? relayCache.ts : 0
+  relayMemo = { ts, relays, offline: [] }
   checkAssignedOffline()
 }
 

@@ -104,6 +104,11 @@
     return sortRelays(out)
   }
 
+  /** @param {Relay[]} next @param {Relay[]} current @returns {boolean} */
+  function lostMostActive (next, current) {
+    return next.filter(r => r.active).length * 2 < current.filter(r => r.active).length
+  }
+
   // no PAYMENT, and nothing we haven't seen yet
   const NOTICE_AREAS = new Set(['EVERYWHERE', 'SERVERS'])
   const NOTICE_MAX = 3
@@ -360,6 +365,7 @@
   const api = {
     adaptPublic,
     fromCache,
+    lostMostActive,
     adaptNotices,
     searchRelays,
     groupByLocation,

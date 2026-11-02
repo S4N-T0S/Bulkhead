@@ -503,7 +503,7 @@
     const { count, ts } = snapshot.relays
     const age = fmt.timeAgo(ts, Date.now())
     // nbsp so a wrapped line doesn't start with a dot
-    $('relay-meta').textContent = ts
+    $('relay-meta').textContent = ts || count
       ? [`${count} active servers`, 'via public API', age && `updated ${age}`].filter(Boolean).join('\u00a0· ')
       : 'Not fetched yet. Loads when you choose a server.'
 

@@ -24,6 +24,8 @@
 
   const HOST_RE = /^[a-z]{2}-[a-z0-9]+-wg-\d+$/
   const SOCKS_RE = /^[a-z]{2}-[a-z0-9]+-wg-socks5-\d+$/
+  // socksName goes to dns.resolve, so the whole name has to be Mullvad's
+  const SOCKS_DOMAIN = '.relays.mullvad.net'
 
   /** @param {unknown} m @returns {string} */
   function message (m) {
@@ -48,7 +50,7 @@
       const socksName = str(e.socks_name)
       const host = str(e.hostname)
       const socksHost = socksName.split('.')[0]
-      if (!HOST_RE.test(host) || !SOCKS_RE.test(socksHost)) continue
+      if (!HOST_RE.test(host) || !SOCKS_RE.test(socksHost) || socksName !== socksHost + SOCKS_DOMAIN) continue
       out.push({
         host,
         socksName,
@@ -83,7 +85,7 @@
       const host = str(e.host)
       const socksHost = str(e.socksHost)
       const socksName = str(e.socksName)
-      if (!HOST_RE.test(host) || !SOCKS_RE.test(socksHost) || !socksName) continue
+      if (!HOST_RE.test(host) || !SOCKS_RE.test(socksHost) || socksName !== socksHost + SOCKS_DOMAIN) continue
       out.push({
         host,
         socksName,

@@ -738,9 +738,9 @@
     const realFetchJson = fetchJson
     let noticeAsks = 0
     let noticeText = 'e2e first'
-    /** @param {string} url @param {number} ms */
-    fetchJson = async (url, ms) => {
-      if (url !== NOTICES_URL) return realFetchJson(url, ms)
+    /** @param {string} url @param {number} ms @param {number} maxBytes */
+    fetchJson = async (url, ms, maxBytes) => {
+      if (url !== NOTICES_URL) return realFetchJson(url, ms, maxBytes)
       noticeAsks++
       await sleep(500)
       if (!noticeText) throw new Error('e2e')

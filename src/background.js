@@ -24,8 +24,10 @@ const RELAY_TTL_MS = 24 * 60 * 60 * 1000
 // an empty socksHost, which the probe reads as "any Mullvad exit is fine".
 const MULLVAD_DIRECT = { host: 'mullvad-direct', ip: '10.64.0.1', port: 1080 }
 const PUBLIC_RELAYS_URL = 'https://api.mullvad.net/www/relays/all/'
+const RELAYS_MAX_BYTES = 2 * 1024 * 1024
 // no API for the /servers banner, this is the page data the site loads
 const NOTICES_URL = 'https://mullvad.net/en/__data.json'
+const NOTICES_MAX_BYTES = 64 * 1024
 const BLOCK_LOG_MAX = 200
 const BLOCK_LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -1004,8 +1006,8 @@ browser.contextualIdentities.onRemoved.addListener(({ contextualIdentity }) => {
   unassign(contextualIdentity.cookieStoreId).catch(() => null)
 })
 
-/** @param {string} url @param {number} timeoutMs @returns {Promise<unknown>} */
-async function fetchJson (url, timeoutMs) {
+/** @param {string} url @param {number} timeoutMs @param {number} maxBytes @returns {Promise<unknown>} */
+async function fetchJson (url, timeoutMs, maxBytes) {
   const res = await fetch(url, {
     cache: 'no-store',
     credentials: 'omit',
@@ -1014,8 +1016,22 @@ async function fetchJson (url, timeoutMs) {
     redirect: 'error',
     signal: AbortSignal.timeout(timeoutMs)
   })
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
-  return res.json()
+  if (!res.ok || !res.body) throw new Error(`${url}: HTTP ${res.status}`)
+  // decoded size, so a gzip bomb stops here too
+  const reader = res.body.getReader()
+  const chunks = []
+  let bytes = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    bytes += value.byteLength
+    if (bytes > maxBytes) {
+      reader.cancel().catch(() => null)
+      throw new Error(`${url}: over ${maxBytes} bytes`)
+    }
+    chunks.push(value)
+  }
+  return new Response(new Blob(chunks)).json()
 }
 
 /** @param {boolean} force @param {boolean} [wait] wait for the status messages too @returns {Promise<typeof relayMemo>} */
@@ -1024,7 +1040,7 @@ async function refreshRelays (force, wait = false) {
 
   let relays
   try {
-    relays = relaylib.adaptPublic(await fetchJson(PUBLIC_RELAYS_URL, 20000))
+    relays = relaylib.adaptPublic(await fetchJson(PUBLIC_RELAYS_URL, 20000, RELAYS_MAX_BYTES))
   } catch (e) {
     // A cached list is better than no picker. This matters most when the
     // default context is itself proxied and its proxy is down: the fetch is
@@ -1059,7 +1075,7 @@ async function refreshNotices () {
   if (!state.ready || (def && def.health !== 'up')) return
   noticesAsked = true
   try {
-    relayNotices = relaylib.adaptNotices(await fetchJson(NOTICES_URL, 8000))
+    relayNotices = relaylib.adaptNotices(await fetchJson(NOTICES_URL, 8000, NOTICES_MAX_BYTES))
   } catch (e) {
     // undocumented route, so just no banner
     relayNotices = []

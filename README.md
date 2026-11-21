@@ -162,6 +162,10 @@ last wins:
   its label uses your ordinary connection. That covers the URL bar on a system
   page such as `about:preferences`, and a tab another extension closes as it
   opens it.
+- **Link previews.** Firefox fetches a previewed link with no container and
+  no tab on it, whichever tab you were in, so it would leave outside that
+  tab's server. Bulkhead cancels that fetch while any server is assigned,
+  and the preview shows an error.
 - **Video calls in a tab** (Meet, Jitsi, Discord) don't work while WebRTC
   leaks are blocked. Firefox has no per-container setting, so it covers
   every tab. Switch Block WebRTC leaks off to get them back. Sites can then

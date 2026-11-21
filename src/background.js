@@ -3,7 +3,7 @@
 // re-implement one; this file's job is state, I/O, health and what the user
 // sees. relays.js owns the relay-list logic.
 
-/* global decide, refusesRoute, limitsWebRTC, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt */
+/* global decide, refusesRoute, limitsWebRTC, refusesPreview, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt */
 
 // How long Firefox ignores this proxy after it fails -- a blacklist
 // duration, not a grace period (nsIProtocolProxyService: "the length of time
@@ -541,6 +541,22 @@ browser.webRequest.onBeforeRequest.addListener((d) => {
   }
   return { cancel: true }
 }, { urls: ['<all_urls>'] }, ['blocking'])
+
+// Link Preview's fetch has no container or tab on it, only a header, and
+// this is the first event that shows headers. The filter keeps the listener
+// off requests made by tabs.
+browser.webRequest.onBeforeSendHeaders.addListener((d) => {
+  let refuse = true
+  try {
+    refuse = refusesPreview(state, d)
+  } catch (e) {
+    log('[bulkhead] refusesPreview threw:', String(e))
+  }
+  if (!refuse) return {}
+  log(`[bulkhead] BLOCKED ${R.PREVIEW} ${String(d.url).slice(0, 100)}`)
+  recordBlock(d, R.PREVIEW)
+  return { cancel: true }
+}, { urls: ['<all_urls>'], types: ['main_frame'], tabId: -1 }, ['blocking', 'requestHeaders'])
 
 // tabId -> the latest takeover seen in that tab: via is '' for no proxy,
 // main means the page itself was stopped and a blocked page is showing.

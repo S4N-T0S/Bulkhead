@@ -117,6 +117,7 @@
     'not-ready': 'Bulkhead was still starting',
     'unattributed': 'No container given',
     'speculative': 'Speculative connection',
+    'preview': 'Link preview',
     'no-proxy': 'No server set',
     'error': 'Bulkhead error — blocked to be safe'
   })

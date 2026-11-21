@@ -1,7 +1,7 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert')
-const { decide, refusesRoute, refusesPreconnect, limitsWebRTC, routedNowhere, UNROUTABLE_HOST, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_URL } = require('../../src/decide.js')
+const { decide, refusesRoute, refusesPreconnect, limitsWebRTC, refusesPreview, routedNowhere, UNROUTABLE_HOST, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_URL } = require('../../src/decide.js')
 
 const TOKEN = 'c0ffee00c0ffee00c0ffee00c0ffee00'
 const PROBE = `${PROBE_URL}?bkh_probe=${TOKEN}`
@@ -700,6 +700,43 @@ test('WebRTC is limited while anything is assigned, unless it is switched off', 
       assert.equal(limitsWebRTC(st({ ready: false, containers, limitWebRTC })), null)
     }
   }
+})
+
+test('a link preview is refused while anything is assigned', () => {
+  const preview = (over = {}) => ({
+    type: 'main_frame',
+    tabId: -1,
+    cookieStoreId: 'firefox-default',
+    requestHeaders: [{ name: 'Accept', value: '*/*' }, { name: 'x-firefox-ai', value: '1' }],
+    ...over
+  })
+  // any assignment in any state, Strict on or off
+  for (const strict of [true, false]) {
+    for (const c of [UP, DOWN, UNKNOWN, { ...UP, ip: '', port: 0 }]) {
+      assert.equal(refusesPreview(st({ strict, containers: { 'firefox-container-1': c } }), preview()), true)
+      assert.equal(refusesPreview(st({ strict, containers: { 'firefox-default': c } }), preview()), true)
+      assert.equal(refusesPreview(st({ strict, containers: { 'firefox-private': c } }), preview()), true)
+    }
+    // settings not read yet: nothing can be told apart
+    assert.equal(refusesPreview(st({ strict, ready: false, containers: {} }), preview()), true)
+    // nothing assigned: inert
+    assert.equal(refusesPreview(st({ strict, containers: {} }), preview()), false)
+  }
+  // header names compare without case
+  assert.equal(refusesPreview(st(), preview({ requestHeaders: [{ name: 'X-Firefox-AI', value: '1' }] })), true)
+  // other page loads with no tab, like a sidebar or a thumbnail
+  assert.equal(refusesPreview(st(), preview({ requestHeaders: [{ name: 'Accept', value: '*/*' }] })), false)
+  assert.equal(refusesPreview(st(), preview({ requestHeaders: [] })), false)
+  assert.equal(refusesPreview(st(), preview({ requestHeaders: undefined })), false)
+  assert.equal(refusesPreview(st({ ready: false }), preview({ requestHeaders: undefined })), false)
+  assert.equal(refusesPreview(st(), preview({ requestHeaders: [null, {}, { name: 7 }] })), false)
+  // a page can set the header on a fetch, but not on a page load with no tab
+  for (const type of ['xmlhttprequest', 'sub_frame', 'script', 'beacon', 'websocket', 'other']) {
+    assert.equal(refusesPreview(st(), preview({ type })), false, type)
+    assert.equal(refusesPreview(st(), preview({ type, tabId: 4 })), false, type)
+  }
+  assert.equal(refusesPreview(st(), preview({ tabId: 4 })), false)
+  assert.equal(refusesPreview(st(), preview({ tabId: undefined })), false)
 })
 
 test('the router refuses a preconnect it cannot place', () => {

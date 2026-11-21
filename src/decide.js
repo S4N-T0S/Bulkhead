@@ -35,6 +35,8 @@
     PRE_ROUTE: 'pre-route',
     // The exit could not be checked at all: another proxy took the check.
     CHECK_TAKEN: 'check-taken',
+    // Link Preview's fetch of a linked page, see refusesPreview.
+    PREVIEW: 'preview',
     ERROR: 'error',
     OK: 'ok'
   }
@@ -44,6 +46,7 @@
   // The router sends what it refuses to this proxy. .invalid is reserved
   // by RFC 2606 and never resolves.
   const UNROUTABLE_HOST = 'bulkhead.invalid'
+  const PREVIEW_HEADER = 'x-firefox-ai'
 
   /** @param {string} url @returns {string | null} */
   function probeToken (url) {
@@ -292,6 +295,19 @@
     return Object.keys(state.containers).length > 0
   }
 
+  // Link Preview fetches the linked page with no container and no tab on
+  // it, whichever tab asked, so it would take the default route. Only its
+  // header marks it. Refused with Strict off too, since only the preview
+  // card needs it.
+  /** @param {KillswitchState} state @param {{ type: string, tabId: number, requestHeaders?: { name: string }[] }} req @returns {boolean} */
+  function refusesPreview (state, req) {
+    if (req.type !== 'main_frame' || req.tabId !== -1) return false
+    const marked = Array.isArray(req.requestHeaders)
+      && req.requestHeaders.some(h => h && typeof h.name === 'string' && h.name.toLowerCase() === PREVIEW_HEADER)
+    if (!marked) return false
+    return !state.ready || Object.keys(state.containers).length > 0
+  }
+
   /** @param {RouteInfo | null | undefined} via @returns {boolean} */
   function routedNowhere (via) {
     return Boolean(via && via.host === UNROUTABLE_HOST)
@@ -302,7 +318,7 @@
     return { verdict, reason }
   }
 
-  const api = { decide, refusesRoute, refusesPreconnect, limitsWebRTC, routedNowhere, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
+  const api = { decide, refusesRoute, refusesPreconnect, limitsWebRTC, refusesPreview, routedNowhere, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

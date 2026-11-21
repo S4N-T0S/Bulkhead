@@ -111,6 +111,7 @@ declare function decide(state: KillswitchState, req: GateRequest): Verdict
 declare function refusesRoute(state: KillswitchState, req: { type: string, tabId: number, cookieStoreId?: string }): boolean
 declare function refusesPreconnect(state: KillswitchState, req: { type: string, tabId: number, cookieStoreId?: string }): boolean
 declare function limitsWebRTC(state: KillswitchState): boolean | null
+declare function refusesPreview(state: KillswitchState, req: { type: string, tabId: number, requestHeaders?: { name: string }[] }): boolean
 declare function routedNowhere(via: RouteInfo | null | undefined): boolean
 declare const UNROUTABLE_HOST: string
 declare function probeToken(url: string): string | null
@@ -134,6 +135,7 @@ declare const R: {
   REROUTED: string
   PRE_ROUTE: string
   CHECK_TAKEN: string
+  PREVIEW: string
   ERROR: string
   OK: string
 }

@@ -446,6 +446,30 @@
     const pre = await preconnects()
     t(`N preconnect direct=${pre.direct} pages=${pre.pages} page=${pre.page}`)
     await browser.tabs.remove([Number(prePage.id), Number(preTab.id), Number(preNew.id)]).catch(() => null)
+
+    // Reader view's article fetch never reaches the gate, so with settings
+    // unread only the router can stop it. The name resolves to the leak
+    // listener, like the preconnects. Reader view won't fetch a site's root.
+    /** @type {string[]} */
+    const readerSeen = []
+    /** @param {browser.proxy._OnRequestDetails} d */
+    const seeReader = (d) => {
+      if (d.url.includes('bulkhead-reader')) readerSeen.push(d.type)
+    }
+    browser.proxy.onRequest.addListener(seeReader, { urls: ['<all_urls>'] })
+    const readerBefore = (await preconnects()).direct
+    // nothing read means nothing assigned either
+    const readerAssigned = state.containers
+    state.containers = Object.create(null)
+    state.ready = false
+    const readerTab = await browser.tabs.create({ url: `http://reader.preconnect.bulkhead.example:${TEST_LEAK_PORT}/article?bulkhead-reader`, cookieStoreId: trkId, openInReaderMode: true, active: false })
+    await waitFor(() => readerSeen.includes('xmlhttprequest'), 8000)
+    await sleep(1500)
+    state.containers = readerAssigned
+    state.ready = true
+    browser.proxy.onRequest.removeListener(seeReader)
+    t(`R reader direct=${(await preconnects()).direct - readerBefore} seen=${readerSeen.includes('xmlhttprequest')}`)
+    await browser.tabs.remove(Number(readerTab.id)).catch(() => null)
     await unassign(trkId)
     await browser.contextualIdentities.remove(trkId).catch(() => null)
 

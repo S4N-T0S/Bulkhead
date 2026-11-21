@@ -1,7 +1,7 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert')
-const { decide, refusesPreconnect, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_URL } = require('../../src/decide.js')
+const { decide, refusesRoute, refusesPreconnect, routedNowhere, UNROUTABLE_HOST, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_URL } = require('../../src/decide.js')
 
 const TOKEN = 'c0ffee00c0ffee00c0ffee00c0ffee00'
 const PROBE = `${PROBE_URL}?bkh_probe=${TOKEN}`
@@ -19,6 +19,8 @@ const CUSTOM_DOWN = { ...CUSTOM_UP, health: 'down' }
 const routeOf = (c, id = 'firefox-container-1') => ({ type: 'socks', host: c.ip, port: c.port, proxyDNS: true, connectionIsolationKey: id })
 const ROUTE = routeOf(UP)
 const FOREIGN = { type: 'socks', host: '127.0.0.1', port: 9050, proxyDNS: true }
+// where the router sends what it refuses
+const NOWHERE = { type: 'socks', host: UNROUTABLE_HOST, port: 1, proxyDNS: true }
 
 function st (over = {}) {
   return {
@@ -300,7 +302,7 @@ test('the only allow paths are probe, unmanaged, confirmed-up and relaxed-mode p
                 'http://127.0.0.1:8080/callback',
                 'http://evil.com.localhost/'
               ]) {
-                for (const route of ['own', 'foreign', 'none', 'stripped', 'otherType', 'otherHost', 'otherPort', 'noKey', 'localDns']) {
+                for (const route of ['own', 'foreign', 'nowhere', 'none', 'stripped', 'otherType', 'otherHost', 'otherPort', 'noKey', 'localDns']) {
                   // when Firefox stamped the request, against the router's call
                   for (const [timeStamp, routedAt] of [[undefined, undefined], [999, 1000], [1000, 1000], [1001, 1000], [1001, Infinity]]) {
                     const s = {
@@ -314,6 +316,7 @@ test('the only allow paths are probe, unmanaged, confirmed-up and relaxed-mode p
                     const proxyInfo = {
                       own,
                       foreign: FOREIGN,
+                      nowhere: NOWHERE,
                       none: null,
                       stripped: null,
                       otherType: { ...own, type: 'http' },
@@ -335,8 +338,12 @@ test('the only allow paths are probe, unmanaged, confirmed-up and relaxed-mode p
                     }
                     // a page taken off its route raises the alarm, whenever it was stamped
                     if (id === 'firefox-container-1' && c && c.health === 'up' && ready && type === 'main_frame' && route !== 'own' && route !== 'none'
-                      && !(route === 'stripped' && UNPROXIED_URLS.has(url))) {
+                      && route !== 'nowhere' && !(route === 'stripped' && UNPROXIED_URLS.has(url))) {
                       assert.equal(out.reason, R.REROUTED, `page on route ${route} to ${url} at ${timeStamp}`)
+                    }
+                    // the router's own refusal stays blocked and raises no alarm
+                    if (route === 'nowhere' && ready && type !== 'speculative' && url !== PROBE) {
+                      assert.deepEqual(out, { verdict: 'block', reason: R.NOT_READY }, `refused route in ${id} to ${url}`)
                     }
                     if (out.verdict === 'allow') {
                       assert.ok(allowed.has(out.reason), `allow via unexpected reason ${out.reason}`)
@@ -618,6 +625,53 @@ test('a probe only counts when it travelled through the assigned server', () => 
   // the default port is implied on both sides or neither
   const noPort = { ip: '127.0.0.1', port: 1080, host: 'custom:y', socksHost: '', custom: true }
   assert.equal(probeTraversed({ host: '127.0.0.1', port: 1080 }, noPort), true)
+})
+
+test('the router refuses everything until settings are read', () => {
+  const types = ['main_frame', 'sub_frame', 'xmlhttprequest', 'image', 'websocket', 'speculative', 'other']
+  const labels = ['firefox-default', 'firefox-private', 'firefox-container-1', 'firefox-container-9', undefined]
+  for (const strict of [true, false]) {
+    for (const containers of [{}, { 'firefox-container-1': UP }, { 'firefox-default': UP }]) {
+      for (const type of types) {
+        for (const cookieStoreId of labels) {
+          for (const tabId of [-1, 3]) {
+            const req = { type, tabId, cookieStoreId }
+            assert.equal(refusesRoute(st({ ready: false, strict, containers }), req), true, `${type} ${cookieStoreId}`)
+            // once they are, only the preconnect rule is left
+            const read = st({ strict, containers })
+            assert.equal(refusesRoute(read, req), refusesPreconnect(read, req), `${type} ${cookieStoreId} read`)
+            if (type !== 'speculative') assert.equal(refusesRoute(read, req), false, `${type} ${cookieStoreId} read`)
+          }
+        }
+      }
+    }
+  }
+})
+
+test('a request the router refused is blocked as not ready, never as a takeover', () => {
+  assert.equal(routedNowhere(NOWHERE), true)
+  for (const via of [null, undefined, {}, ROUTE, FOREIGN, { ...NOWHERE, host: 'bulkhead.invalid.example' }]) {
+    assert.equal(routedNowhere(via), false, JSON.stringify(via))
+  }
+  const nowhere = (over = {}) => rq({ proxyInfo: NOWHERE, ...over })
+  // refused before settings were read, gated after the exit checked out
+  assert.deepEqual(decide(st(), nowhere()), { verdict: 'block', reason: R.NOT_READY })
+  assert.deepEqual(decide(st(), nowhere({ type: 'xmlhttprequest' })), { verdict: 'block', reason: R.NOT_READY })
+  // unmanaged is blocked too, it would only hit a proxy error
+  for (const strict of [true, false]) {
+    assert.equal(reason(st({ strict, containers: {} }), nowhere()), R.NOT_READY)
+    assert.equal(verdict(st({ strict, containers: {} }), nowhere({ cookieStoreId: 'firefox-default' })), 'block')
+    assert.equal(verdict(st({ strict }), nowhere({ cookieStoreId: 'firefox-container-2' })), 'block')
+    assert.equal(verdict(st({ strict }), nowhere({ cookieStoreId: undefined })), 'block')
+  }
+  // loopback on a profile that proxies it
+  const local = { url: 'http://127.0.0.1:8080/callback' }
+  assert.equal(reason(st({ allowLocal: true }), nowhere(local)), R.NOT_READY)
+  assert.equal(reason(st({ allowLocal: true, containers: {} }), nowhere(local)), R.NOT_READY)
+  // same for a container still waiting on its check
+  assert.equal(reason(st({ containers: { 'firefox-container-1': UNKNOWN } }), nowhere()), R.NOT_READY)
+  // a check sent nowhere stays a stopped check
+  assert.deepEqual(decide(st(), probeReq({ proxyInfo: NOWHERE })), { verdict: 'block', reason: R.REROUTED })
 })
 
 test('the router refuses a preconnect it cannot place', () => {

@@ -41,6 +41,9 @@
 
   const PROBE_MARKER = 'bkh_probe'
   const PROBE_URL = 'https://am.i.mullvad.net/json'
+  // The router sends what it refuses to this proxy. .invalid is reserved
+  // by RFC 2606 and never resolves.
+  const UNROUTABLE_HOST = 'bulkhead.invalid'
 
   /** @param {string} url @returns {string | null} */
   function probeToken (url) {
@@ -181,6 +184,11 @@
     //    when a pile of tabs reloads at once. Fail closed through it.
     if (!state.ready) return v(BLOCK, R.NOT_READY)
 
+    //    The router sent this nowhere because settings weren't read yet.
+    //    Letting it on ends in a proxy error, or in a false takeover alarm
+    //    if the container has checked out since.
+    if (routedNowhere(req.proxyInfo) && req.type !== 'speculative') return v(BLOCK, R.NOT_READY)
+
     const id = req.cookieStoreId
     const known = typeof id === 'string' && id !== ''
     const c = known ? state.containers[id] : undefined
@@ -265,12 +273,26 @@
     return state.strict || req.tabId >= 0
   }
 
+  // For the router, ahead of everything but a server check. Reader view,
+  // the PDF viewer and Firefox's own requests never reach the gate, so only
+  // the router can stop them while settings are unread. No label is let
+  // through, since a pinned No container isn't known yet either.
+  /** @param {KillswitchState} state @param {{ type: string, tabId: number, cookieStoreId?: string }} req @returns {boolean} */
+  function refusesRoute (state, req) {
+    return !state.ready || refusesPreconnect(state, req)
+  }
+
+  /** @param {RouteInfo | null | undefined} via @returns {boolean} */
+  function routedNowhere (via) {
+    return Boolean(via && via.host === UNROUTABLE_HOST)
+  }
+
   /** @param {'allow' | 'block'} verdict @param {string} reason @returns {Verdict} */
   function v (verdict, reason) {
     return { verdict, reason }
   }
 
-  const api = { decide, refusesPreconnect, probeToken, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
+  const api = { decide, refusesRoute, refusesPreconnect, routedNowhere, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

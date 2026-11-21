@@ -3,7 +3,7 @@
 // re-implement one; this file's job is state, I/O, health and what the user
 // sees. relays.js owns the relay-list logic.
 
-/* global decide, refusesPreconnect, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt */
+/* global decide, refusesRoute, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt */
 
 // How long Firefox ignores this proxy after it fails -- a blacklist
 // duration, not a grace period (nsIProtocolProxyService: "the length of time
@@ -181,6 +181,22 @@ async function hydrate () {
   })
 }
 
+// The router holds requests until settings have been read once, or this
+// long. A read took 11 to 79 ms at browser start. Refusing them instead
+// would open every restored tab on the blocked page.
+const FIRST_READ_MAX_MS = 5000
+let firstReadOver = false
+/** @type {() => void} */
+let endFirstRead = () => {}
+/** @type {Promise<void>} */
+const firstRead = new Promise((resolve) => {
+  endFirstRead = () => {
+    firstReadOver = true
+    resolve()
+  }
+})
+setTimeout(endFirstRead, FIRST_READ_MAX_MS)
+
 // Failing to read storage leaves the gate blocking everything, which is the
 // right direction but a dead end without a retry: nothing would ever clear
 // it and the popup would claim to be starting up forever.
@@ -188,10 +204,12 @@ async function hydrateWithRetry () {
   for (let attempt = 0; ; attempt++) {
     try {
       await hydrate()
+      endFirstRead()
       return
     } catch (e) {
       state.hydrateError = e instanceof Error ? e.message : String(e)
       log('[bulkhead] hydrate failed:', state.hydrateError)
+      endFirstRead()
       await new Promise(r => setTimeout(r, Math.min(30000, 1000 * 2 ** attempt)))
     }
   }
@@ -205,8 +223,10 @@ browser.storage.onChanged.addListener((changes, area) => {
 // Router: picks the SOCKS exit for each request. Fires before webRequest,
 // except on a request Firefox's classifier cancels, and cannot block -- an
 // invalid return here means a direct connection, so it only ever assigns.
-/** @param {browser.proxy._OnRequestDetails} d @param {boolean} [note] */
+/** @param {browser.proxy._OnRequestDetails} d @param {boolean} [note] @returns {unknown} */
 function route (d, note = true) {
+  // Firefox waits for the promise before it goes on to the gate
+  if (!firstReadOver) return firstRead.then(() => route(d, note))
   const token = probeToken(d.url)
   if (token) {
     const target = probeTargets.get(token)
@@ -223,7 +243,7 @@ function route (d, note = true) {
     // shortcut would let a web page opt out of the proxy by pasting the
     // marker into a URL.
   }
-  if (refusesPreconnect(state, d)) return [UNROUTABLE, null]
+  if (refusesRoute(state, d)) return [UNROUTABLE, null]
   // Mirrors the gate's loopback opt-in. Under default prefs Firefox refuses
   // to proxy loopback anyway (network.proxy.allow_hijacking_localhost), so
   // this mostly states intent -- but on a profile that flipped that pref, a
@@ -360,9 +380,8 @@ function noteRouted (requestId, at) {
 browser.webRequest.onCompleted.addListener(d => routedAt.delete(d.requestId), { urls: ['<all_urls>'] })
 
 // A syntactically valid SOCKS proxy that cannot resolve, so a request routed
-// here fails hard instead of falling through. .invalid is reserved by
-// RFC 2606 and never resolves.
-const UNROUTABLE = { type: 'socks', host: 'bulkhead.invalid', port: 1, proxyDNS: true, failoverTimeout: 1 }
+// here fails hard instead of falling through.
+const UNROUTABLE = { type: 'socks', host: UNROUTABLE_HOST, port: 1, proxyDNS: true, failoverTimeout: 1 }
 
 // The list ends in null, which Firefox reads as "no failover". Without it,
 // whatever proxy was in place before this listener ran -- a system or PAC

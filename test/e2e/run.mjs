@@ -29,7 +29,7 @@ const REDIRECTOR = 'redirect.bulkhead.example'
 // the local exit carries them to the canary
 const PRECONNECT = 'preconnect.bulkhead.example'
 const TAIL_NAMES = ['tail-window', 'tail-moved', 'tail-load', 'tail-strip', 'tail-ws', 'tail-over', 'tail-other', 'tail-img', 'tail-frame', 'tail-bad']
-const PRECONNECTS = ['update', 'create', 'page', ...TAIL_NAMES].map(name => `${name}.${PRECONNECT}`)
+const PRECONNECTS = ['update', 'create', 'page', 'reader', ...TAIL_NAMES].map(name => `${name}.${PRECONNECT}`)
 
 const firefox = await firefoxBinary()
 const tunnel = await detectTunnel()
@@ -247,6 +247,7 @@ function evaluate () {
     '[test] K flood kept=true swept=true',
     '[test] M tracker early=true completed=false logged=false flagged=false ws=NS_ERROR_ABORT',
     '[test] N preconnect direct=0 pages=2 page=true',
+    '[test] R reader direct=0 seen=true',
     '[test] O inert moved=false listening=true',
     '[test] O first moved=true',
     '[test] O window leaked=true seen=true ws=NS_ERROR_ABORT',

@@ -131,11 +131,10 @@ last wins:
 - **Startup.** Requests Firefox makes before Bulkhead's background page runs
   are seen by nothing.
 - **Mozilla's own sites.** Firefox hides addons.mozilla.org and the other
-  sites it restricts from extensions' request checks. Once Bulkhead has
-  loaded its settings, it routes them through the container's server but
-  can't block them: before that they go out directly, and while a server
-  is unchecked or wrong they go out through it anyway. Another proxy
-  extension taking them over goes unnoticed.
+  sites it restricts from extensions' request checks. Bulkhead routes them
+  through the container's server but can't block them: while a server is
+  unchecked or wrong they go out through it anyway. Another proxy extension
+  taking them over goes unnoticed.
 - **Other extensions' DNS lookups.** `dns.resolve()` bypasses every proxy.
   uBlock Origin's CNAME uncloaking was the known case, fixed in uBO 1.60.0.
   On older uBO, untick "Uncloak canonical names".
@@ -200,7 +199,11 @@ with no I/O, clock or browser APIs, so it can be tested exhaustively.
 
 - **Health is never saved.** After a restart every server starts unchecked,
   which blocks.
-- **Blocked until settings load**, so session restore can't slip out direct.
+- **Nothing is routed until settings load.** The router holds every
+  request until they are read, tens of milliseconds at browser start, so
+  session restore can't slip out direct. If they can't be read, every
+  request is blocked and routed to a proxy that doesn't exist, Firefox's own
+  included, until they can.
 - **Checks compare exit names.** `am.i.mullvad.net` reports which relay
   answered (`se-got-wg-socks5-001`). Any other answer blocks the container.
 - **Every request extensions can see is route-checked** against the proxy
@@ -294,6 +297,7 @@ with live relays:
 | exit dies with another extension's proxy behind it | fails, server marked `down`, nothing reaches the other proxy |
 | another extension takes Bulkhead's own server check | stopped before it connects, container blocked as "another proxy", not as a dead server |
 | another extension opens a site in a container, or a page in an unmanaged tab preconnects | no connection leaves outside the exit |
+| reader view opened while settings can't be read | its article request is sent nowhere |
 | a stripper added after Bulkhead's preconnect and websocket listener | it wins until that listener moves, then loses, so a change in Firefox's listener order fails the run |
 
 `node test/e2e/transition.mjs --failover-direct=true` is a manual check of

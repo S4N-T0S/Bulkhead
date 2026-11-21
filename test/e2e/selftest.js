@@ -55,6 +55,23 @@
     return cond()
   }
 
+  /** @param {() => Promise<boolean>} cond @param {number} ms */
+  async function waitForAsync (cond, ms) {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      if (await cond()) return true
+      await sleep(250)
+    }
+    return cond()
+  }
+
+  const webrtc = () => browser.privacy.network.webRTCIPHandlingPolicy.get({})
+  const webrtcHeld = async () => {
+    const p = await webrtc()
+    return p.value === 'proxy_only' && p.levelOfControl === 'controlled_by_this_extension'
+  }
+  const webrtcFree = async () => (await webrtc()).levelOfControl === 'controllable_by_this_extension'
+
   async function run () {
     t('begin')
     await waitFor(() => state.ready, 8000)
@@ -77,6 +94,8 @@
     // complete, not merely go unblocked
     t(`inert ok=${!inertHit && outcomeOf('bulkhead-inert') === 'completed'} outcome=${outcomeOf('bulkhead-inert')}`)
     if (inertTab.id !== undefined) await browser.tabs.remove(inertTab.id)
+    // the WebRTC setting is left alone too
+    const webrtcInert = await webrtc()
 
     // Dead proxy: an address inside Mullvad's SOCKS range with no listener.
     // Without a tunnel it is unroutable, with one it refuses -- either way
@@ -93,6 +112,7 @@
     await browser.storage.local.set({ containers: { [deadId]: stored } })
     await waitFor(() => deadId in state.containers, 5000)
     t(`O first moved=${tailMovedAt !== firstMoved}`)
+    t(`Q webrtc inert=${webrtcInert.value === 'default' && webrtcInert.levelOfControl === 'controllable_by_this_extension'} assigned=${await waitForAsync(webrtcHeld, 5000)}`)
     await waitFor(() => {
       const c = state.containers[deadId]
       return Boolean(c && c.health === 'down')
@@ -129,14 +149,14 @@
     t(`A hint elsewhere=${hint.includes('blocked elsewhere: bulkhead-dead')} title=${hint}`)
     if (otherTab.id !== undefined) await browser.tabs.remove(otherTab.id)
 
-    // Hardening: apply must take control of both settings, clear must give
-    // them back untouched.
+    // Hardening: apply must take control of prefetching, clear must give it
+    // back untouched. The WebRTC setting stays, since a server is assigned.
     const applied = await applyHardening(true)
     const applyOk = applied.webRTC.ok && applied.prediction.ok
-      && applied.webRTC.levelOfControl === 'controlled_by_this_extension'
+      && applied.prediction.levelOfControl === 'controlled_by_this_extension'
     const cleared = await applyHardening(false)
-    const clearOk = !cleared.webRTC.ok && !cleared.prediction.ok
-      && cleared.webRTC.levelOfControl !== 'controlled_by_this_extension'
+    const clearOk = !cleared.prediction.ok && cleared.prediction.levelOfControl !== 'controlled_by_this_extension'
+      && cleared.webRTC.ok && cleared.webRTC.levelOfControl === 'controlled_by_this_extension'
     t(`harden apply=${applyOk ? 'ok' : JSON.stringify(applied)} clear=${clearOk ? 'ok' : JSON.stringify(cleared)}`)
 
     // Loopback, from a container that is blocked. A sign-in flow finishing
@@ -892,6 +912,14 @@
     t(`E race notup=${Boolean(raced) && raced.health !== 'up'} health=${raced && raced.health}`)
 
     await browser.contextualIdentities.remove(deadId).catch(() => null)
+
+    // The last server is gone, so the WebRTC setting goes back. Hardening
+    // holds it with nothing assigned, and gives it back too.
+    const webrtcReleased = await waitForAsync(webrtcFree, 5000)
+    const alone = await applyHardening(true)
+    const aloneOk = alone.webRTC.ok && alone.webRTC.levelOfControl === 'controlled_by_this_extension'
+    await applyHardening(false)
+    t(`Q webrtc released=${webrtcReleased} toggle=${aloneOk} restored=${await webrtcFree() && (await webrtc()).value === 'default'}`)
 
     // Only the once-per-event warnings may fire: a retired server (with a
     // tunnel, test-dead is one) and DoH. A verdict never does.

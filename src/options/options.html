@@ -160,15 +160,20 @@
       <span class="grow">
         <strong>Browser hardening</strong>
         <span class="sub block">
-          Closes two leak paths at the source: WebRTC is forced through the proxy, and
-          prefetch — Firefox connecting to links before you click — is switched off entirely.
-          <strong>This usually stops browser video calls working</strong> — Meet, Jitsi, Discord in
-          a tab; turn it off if you need one. Whole-browser settings, not per-container, and
-          they are restored exactly as they were.
+          Switches prefetch — Firefox connecting to links before you click — off entirely, and
+          keeps WebRTC limited to proxies when no server is assigned too. Whole-browser
+          settings, not per-container, and they are restored exactly as they were.
         </span>
       </span>
     </label>
     <ul id="harden-state" class="sub"></ul>
+    <p id="webrtc-note" class="sub">
+      While any server is assigned, WebRTC is limited to proxies in all of Firefox, with or
+      without the switch above. A page could otherwise read the address the Mullvad app exits
+      at, which is the same for every container.
+      <strong>This stops browser video calls working</strong> — Meet, Jitsi, Discord in a tab,
+      in any container or none. It is restored when the last server is unassigned.
+    </p>
   </section>
 
   <section class="card">

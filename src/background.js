@@ -178,6 +178,7 @@ async function hydrate () {
     Promise.all(Object.keys(containers).map(containerName)).then(updateAllBadges)
     checkAssignedOffline()
     checkDoh()
+    syncWebRTC()
   })
 }
 
@@ -1413,9 +1414,10 @@ async function getHardening () {
   ])
   return {
     enabled: stored.hardening === true,
+    assigned: Object.keys(state.containers).length > 0,
     webRTC: {
       value: webrtc.value,
-      ok: webrtc.value === 'proxy_only',
+      ok: webrtc.value === WEBRTC_POLICY,
       levelOfControl: webrtc.levelOfControl
     },
     prediction: {
@@ -1426,20 +1428,52 @@ async function getHardening () {
   }
 }
 
-// These are global browser settings, not per-container -- which is why the
-// toggle is opt-in rather than applied on install, and why clear() restores
-// whatever the user had. networkPredictionEnabled covers DNS prefetch,
-// prerender and preemptive TCP/TLS in one switch.
+// With any other policy a page gets the address the Mullvad app exits at
+// through WebRTC, the same for every container and also from a blocked one.
+// Measured from an about:blank frame, which has no proxied load of its own
+// for Firefox to go by; disable_non_proxied_udp goes by that load. So this
+// is on while anything is assigned, hardening or not. The setting is for all
+// of Firefox and stops WebRTC in every tab. clear() gives back whatever was
+// there. Another extension's or a policy's setting stays in charge, and the
+// settings page says so.
+const WEBRTC_POLICY = 'proxy_only'
+/** @type {Promise<unknown>} */
+let webrtcQueue = Promise.resolve()
+
+function syncWebRTC () {
+  const next = webrtcQueue.then(async () => {
+    const policy = browser.privacy.network.webRTCIPHandlingPolicy
+    const { hardening } = await browser.storage.local.get('hardening')
+    const want = hardening === true || Object.keys(state.containers).length > 0
+    const now = await policy.get({})
+    const ours = now.levelOfControl === 'controlled_by_this_extension'
+    if (want && !(ours && now.value === WEBRTC_POLICY)) {
+      // kept by Firefox for when whatever outranks it lets go
+      await policy.set({ value: WEBRTC_POLICY })
+      const after = await policy.get({})
+      log(after.levelOfControl === 'controlled_by_this_extension'
+        ? '[bulkhead] WebRTC policy set'
+        : `[bulkhead] WebRTC policy is held elsewhere (${after.levelOfControl}), left at ${after.value}`)
+    } else if (!want && now.levelOfControl !== 'controllable_by_this_extension') {
+      // also one of ours that something else outranks
+      await policy.clear({})
+      if (ours) log('[bulkhead] WebRTC policy cleared')
+    }
+  })
+  webrtcQueue = next.catch(e => log('[bulkhead] WebRTC policy failed:', String(e)))
+  return webrtcQueue
+}
+
+// Global browser settings, not per-container, which is why the toggle is
+// opt-in and clear() restores whatever the user had. networkPredictionEnabled
+// covers DNS prefetch, prerender and preemptive TCP/TLS in one switch. The
+// toggle also keeps the WebRTC policy on with nothing assigned.
 /** @param {boolean} on */
 async function applyHardening (on) {
-  if (on) {
-    await browser.privacy.network.webRTCIPHandlingPolicy.set({ value: 'proxy_only' })
-    await browser.privacy.network.networkPredictionEnabled.set({ value: false })
-  } else {
-    await browser.privacy.network.webRTCIPHandlingPolicy.clear({})
-    await browser.privacy.network.networkPredictionEnabled.clear({})
-  }
+  if (on) await browser.privacy.network.networkPredictionEnabled.set({ value: false })
+  else await browser.privacy.network.networkPredictionEnabled.clear({})
   await browser.storage.local.set({ hardening: on })
+  await syncWebRTC()
   log(`[bulkhead] hardening ${on ? 'applied' : 'cleared'}`)
   return getHardening()
 }

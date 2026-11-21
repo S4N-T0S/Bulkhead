@@ -458,18 +458,28 @@
     await browser.runtime.sendMessage({ cmd: 'setAllowLocal', on })
   })
 
+  let hardeningShown = ''
+
   async function renderHardening () {
     const h = await browser.runtime.sendMessage({ cmd: 'getHardening' })
     const box = /** @type {HTMLInputElement} */ ($('harden'))
+    // asked again on every refresh, since assigning a server changes it
+    const key = JSON.stringify(h)
+    if (key === hardeningShown || box.disabled) return
+    hardeningShown = key
     box.checked = h.enabled
 
+    // wanted with a server assigned, whatever the switch says
+    const exposed = !h.webRTC.ok && (h.assigned || h.enabled)
+      ? ' Bulkhead could not set this. Until it reads proxy_only, a page in any container can read the address the Mullvad app exits at.'
+      : ''
     const rows = [
-      ['WebRTC routing', String(h.webRTC.value), h.webRTC.ok, 'proxy_only', h.webRTC.levelOfControl],
-      ['Prefetch / prerender', String(h.prediction.value), h.prediction.ok, 'false', h.prediction.levelOfControl]
+      ['WebRTC routing', String(h.webRTC.value), h.webRTC.ok, 'proxy_only', h.webRTC.levelOfControl, exposed],
+      ['Prefetch / prerender', String(h.prediction.value), h.prediction.ok, 'false', h.prediction.levelOfControl, '']
     ]
     const ul = $('harden-state')
     ul.textContent = ''
-    for (const [label, value, ok, want, control] of rows) {
+    for (const [label, value, ok, want, control, note] of rows) {
       const li = document.createElement('li')
       const mark = document.createElement('span')
       mark.className = ok ? 'okmark' : 'badmark'
@@ -484,6 +494,7 @@
         // nothing would look broken
         li.append(document.createTextNode(` — controlled elsewhere (${control})`))
       }
+      if (note) li.append(document.createTextNode(note))
       ul.append(li)
     }
   }
@@ -705,6 +716,6 @@
     .then(() => dialog.open ? undefined : refresh())
     .catch(() => null)
   setInterval(() => {
-    if (!dialog.open) refresh().catch(refreshFailed)
+    if (!dialog.open) refresh().then(renderHardening).catch(refreshFailed)
   }, 5000)
 })()

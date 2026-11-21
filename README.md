@@ -104,8 +104,11 @@ last wins:
   address, instead of a blank network error.
 - **Toolbar badge**: nothing when verified, `?` while checking, `!` when
   blocked.
-- **Optional hardening**: WebRTC forced through the proxy, prefetching and
-  prerendering off. Restored exactly when you turn it off.
+- **WebRTC kept to proxies** in all of Firefox while any server is
+  assigned, so a page can't read the address the Mullvad app exits at.
+  Restored when the last server is unassigned.
+- **Optional hardening**: prefetching and prerendering off, and the WebRTC
+  setting kept with nothing assigned. Restored exactly when you turn it off.
 - **Allow loopback** (off by default) for sign-in flows that hand a token to
   an app on 127.0.0.1.
 
@@ -159,6 +162,11 @@ last wins:
   its label uses your ordinary connection. That covers the URL bar on a system
   page such as `about:preferences`, and a tab another extension closes as it
   opens it.
+- **Video calls in a tab.** Firefox's WebRTC setting has no per-container
+  form, so while any server is assigned it applies to every tab, and Meet,
+  Jitsi or Discord calls in a tab stop working. If another extension or a
+  policy holds the setting, Bulkhead leaves it alone and the settings page
+  says so.
 - **Bulkhead disabled, crashed or uninstalled.** Nothing protects you then.
 
 There is no "leak test" button. Three detectors were built, and all three
@@ -289,7 +297,8 @@ with live relays:
 | no container on the tunnel exit, tunnel down | tabs and the server-list fetch blocked |
 | no container on a custom exit, status-message fetch | carried by the exit, no cookie sent |
 | no container on the tunnel exit, tunnel up | verified, traffic passes |
-| hardening on, then off | applied, then fully restored |
+| a server assigned, then none | WebRTC setting taken, then given back |
+| hardening on, then off | prefetching off, then restored; WebRTC setting kept while a server is assigned |
 | loopback from a blocked container | blocked with the toggle off, reaches a local server with it on |
 | custom exit, nothing listening | `down`, blocked |
 | custom exit, live SOCKS server | `up`, verified through the exit |

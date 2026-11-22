@@ -85,9 +85,11 @@ last wins:
   the Mullvad app is connected to. It's unreachable the moment the app
   disconnects.
 - **No container and private windows** can each get a server, or stay
-  direct. Private windows need Run in Private Windows allowed in
-  about:addons. Pinning the no-container context also covers Bulkhead's own
-  server-list and status-message fetches.
+  direct. Giving No container a server is recommended. Firefox loads some
+  pages outside any tab, such as a website in the sidebar, and they then use
+  that server instead of your ordinary connection. So do Bulkhead's own
+  server-list and status-message fetches. Private windows need Run in
+  Private Windows allowed in about:addons.
 - **Custom exits**: your own SOCKS5 servers (an SSH tunnel, a VPS), with
   the same checks. Bulkhead can't vouch for where a foreign server exits,
   and says so.
@@ -166,6 +168,12 @@ last wins:
   no tab on it, whichever tab you were in, so it would leave outside that
   tab's server. Bulkhead cancels that fetch while any server is assigned,
   and the preview shows an error.
+- **Pages Firefox loads outside a tab.** A website in the sidebar (Firefox's
+  chatbot, another extension's panel) and a page Firefox reads in the
+  background have no tab and no container of yours on them, so Bulkhead
+  can't send them through a container's server. They use the No container
+  server if you gave it one, and your ordinary connection if not. The
+  thumbnails Firefox makes of pages use your ordinary connection either way.
 - **Video calls in a tab** (Meet, Jitsi, Discord) don't work while WebRTC
   leaks are blocked. Firefox has no per-container setting, so it covers
   every tab. Switch Block WebRTC leaks off to get them back. Sites can then

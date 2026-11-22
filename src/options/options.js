@@ -32,6 +32,8 @@
     const allowLocal = /** @type {HTMLInputElement} */ ($('allow-local'))
     allowLocal.checked = st.allowLocal
     $('version').textContent = `v${st.version}`
+    // assigning a server changes the WebRTC line
+    renderHardening().catch(() => null)
   }
 
   // -- setup gate
@@ -459,53 +461,70 @@
   })
 
   let hardeningShown = ''
+  // clicks on the two switches still being applied
+  let hardeningBusy = 0
+  const STATE_MARKS = { warn: '! ', bad: '✗ ', off: '' }
+  /** @type {Record<string, string>} */
+  const stateShown = {}
 
   async function renderHardening () {
-    const h = await browser.runtime.sendMessage({ cmd: 'getHardening' })
-    const box = /** @type {HTMLInputElement} */ ($('harden'))
-    // asked again on every refresh, since assigning a server changes it
-    const key = JSON.stringify(h)
-    if (key === hardeningShown || box.disabled) return
-    hardeningShown = key
-    box.checked = h.enabled
-
-    // wanted with a server assigned, whatever the switch says
-    const exposed = !h.webRTC.ok && (h.assigned || h.enabled)
-      ? ' Bulkhead could not set this. Until it reads proxy_only, a page in any container can read the address the Mullvad app exits at.'
-      : ''
-    const rows = [
-      ['WebRTC routing', String(h.webRTC.value), h.webRTC.ok, 'proxy_only', h.webRTC.levelOfControl, exposed],
-      ['Prefetch / prerender', String(h.prediction.value), h.prediction.ok, 'false', h.prediction.levelOfControl, '']
-    ]
-    const ul = $('harden-state')
-    ul.textContent = ''
-    for (const [label, value, ok, want, control, note] of rows) {
-      const li = document.createElement('li')
-      const mark = document.createElement('span')
-      mark.className = ok ? 'okmark' : 'badmark'
-      mark.textContent = ok ? '✓ ' : '✗ '
-      li.append(mark, document.createTextNode(`${label}: `))
-      const code = document.createElement('code')
-      code.textContent = value
-      li.append(code)
-      if (!ok) li.append(document.createTextNode(` (want ${want})`))
-      if (control && control !== 'controlled_by_this_extension' && control !== 'controllable_by_this_extension') {
-        // another extension owns the setting; a toggle that silently does
-        // nothing would look broken
-        li.append(document.createTextNode(` — controlled elsewhere (${control})`))
-      }
-      if (note) li.append(document.createTextNode(note))
-      ul.append(li)
-    }
+    drawHardening(await browser.runtime.sendMessage({ cmd: 'getHardening' }))
   }
 
-  $('harden').addEventListener('change', async (e) => {
-    const box = /** @type {HTMLInputElement} */ (e.target)
+  // Only shown when something is off. It's a live region, so it isn't
+  // rewritten with the same text.
+  /** @param {string} id @param {string} title @param {{ kind: 'warn' | 'bad' | 'off', text: string } | null} s */
+  function drawState (id, title, s) {
+    const shown = s ? s.kind + s.text : ''
+    if (stateShown[id] === shown) return
+    stateShown[id] = shown
+    const line = $(id)
+    line.hidden = !s
+    line.textContent = ''
+    if (!s) return
+    const mark = document.createElement('span')
+    mark.className = `${s.kind}mark`
+    mark.setAttribute('aria-hidden', 'true')
+    mark.textContent = STATE_MARKS[s.kind]
+    // screen readers get this line alone, so name the switch
+    const subject = document.createElement('span')
+    subject.className = 'visually-hidden'
+    subject.textContent = `${title}: `
+    line.append(mark, subject, document.createTextNode(s.text))
+  }
+
+  /** @param {any} h */
+  function drawHardening (h) {
+    const key = JSON.stringify(h)
+    if (key === hardeningShown || hardeningBusy) return
+    hardeningShown = key
+    // nothing to show until settings are read
+    const limit = /** @type {HTMLInputElement} */ ($('limit-webrtc'))
+    limit.checked = h.webRTC.on
+    limit.disabled = !h.ready
+    drawState('webrtc-state', 'Block WebRTC leaks', h.ready ? fmt.webrtcState(h.webRTC) : null)
+    const box = /** @type {HTMLInputElement} */ ($('harden'))
+    box.checked = h.enabled
+    drawState('harden-state', 'Block prefetching', fmt.prefetchState({ ...h.prediction, on: h.enabled }))
+  }
+
+  /** @param {HTMLInputElement} box @param {string} cmd */
+  async function applySwitch (box, cmd) {
+    hardeningBusy++
     box.disabled = true
-    await browser.runtime.sendMessage({ cmd: 'setHardening', on: box.checked })
+    // the reply carries the new settings
+    const h = await browser.runtime.sendMessage({ cmd, on: box.checked }).catch(() => null)
     box.disabled = false
-    renderHardening()
-  })
+    hardeningBusy--
+    hardeningShown = ''
+    // the other switch's reply is newer, wait for it
+    if (hardeningBusy) return
+    if (h && h.webRTC) drawHardening(h)
+    else renderHardening().catch(refreshFailed)
+  }
+
+  $('harden').addEventListener('change', e => applySwitch(/** @type {HTMLInputElement} */ (e.target), 'setHardening'))
+  $('limit-webrtc').addEventListener('change', e => applySwitch(/** @type {HTMLInputElement} */ (e.target), 'setLimitWebRTC'))
 
   // -- server list & activity
 
@@ -711,11 +730,11 @@
     box.append(b)
   }
 
-  refresh().then(renderHardening).catch(refreshFailed)
+  refresh().catch(refreshFailed)
   browser.runtime.sendMessage({ cmd: 'settingsOpened' })
     .then(() => dialog.open ? undefined : refresh())
     .catch(() => null)
   setInterval(() => {
-    if (!dialog.open) refresh().then(renderHardening).catch(refreshFailed)
+    if (!dialog.open) refresh().catch(refreshFailed)
   }, 5000)
 })()

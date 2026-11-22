@@ -104,11 +104,11 @@ last wins:
   address, instead of a blank network error.
 - **Toolbar badge**: nothing when verified, `?` while checking, `!` when
   blocked.
-- **WebRTC kept to proxies** in all of Firefox while any server is
-  assigned, so a page can't read the address the Mullvad app exits at.
-  Restored when the last server is unassigned.
-- **Optional hardening**: prefetching and prerendering off, and the WebRTC
-  setting kept with nothing assigned. Restored exactly when you turn it off.
+- **WebRTC leaks blocked** while any server is assigned, so sites can't
+  link your containers through WebRTC. Video calls stop working in every
+  tab. A switch turns it off.
+- **Block prefetching** (off by default): Firefox stops connecting to links
+  before you click them.
 - **Allow loopback** (off by default) for sign-in flows that hand a token to
   an app on 127.0.0.1.
 
@@ -162,11 +162,15 @@ last wins:
   its label uses your ordinary connection. That covers the URL bar on a system
   page such as `about:preferences`, and a tab another extension closes as it
   opens it.
-- **Video calls in a tab.** Firefox's WebRTC setting has no per-container
-  form, so while any server is assigned it applies to every tab, and Meet,
-  Jitsi or Discord calls in a tab stop working. If another extension or a
-  policy holds the setting, Bulkhead leaves it alone and the settings page
-  says so.
+- **Video calls in a tab** (Meet, Jitsi, Discord) don't work while WebRTC
+  leaks are blocked. Firefox has no per-container setting, so it covers
+  every tab. Switch Block WebRTC leaks off to get them back. Sites can then
+  find the address the Mullvad app exits at, the same for every container.
+  A site you give your camera or microphone also sees your computer's own
+  network addresses.
+- **WebRTC controlled by something else.** An extension installed later or
+  a policy can hold Firefox's WebRTC setting. Bulkhead can't change it
+  then, and the settings page and the popup say so.
 - **Bulkhead disabled, crashed or uninstalled.** Nothing protects you then.
 
 There is no "leak test" button. Three detectors were built, and all three
@@ -297,8 +301,8 @@ with live relays:
 | no container on the tunnel exit, tunnel down | tabs and the server-list fetch blocked |
 | no container on a custom exit, status-message fetch | carried by the exit, no cookie sent |
 | no container on the tunnel exit, tunnel up | verified, traffic passes |
-| a server assigned, then none | WebRTC setting taken, then given back |
-| hardening on, then off | prefetching off, then restored; WebRTC setting kept while a server is assigned |
+| a server assigned, Block WebRTC leaks off, on, then no server | WebRTC setting taken, given back, taken again, given back |
+| Block prefetching on, then off | prefetching off, then restored |
 | loopback from a blocked container | blocked with the toggle off, reaches a local server with it on |
 | custom exit, nothing listening | `down`, blocked |
 | custom exit, live SOCKS server | `up`, verified through the exit |

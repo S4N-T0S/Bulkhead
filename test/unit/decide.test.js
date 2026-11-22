@@ -1,7 +1,7 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert')
-const { decide, refusesRoute, refusesPreconnect, routedNowhere, UNROUTABLE_HOST, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_URL } = require('../../src/decide.js')
+const { decide, refusesRoute, refusesPreconnect, limitsWebRTC, routedNowhere, UNROUTABLE_HOST, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_URL } = require('../../src/decide.js')
 
 const TOKEN = 'c0ffee00c0ffee00c0ffee00c0ffee00'
 const PROBE = `${PROBE_URL}?bkh_probe=${TOKEN}`
@@ -672,6 +672,34 @@ test('a request the router refused is blocked as not ready, never as a takeover'
   assert.equal(reason(st({ containers: { 'firefox-container-1': UNKNOWN } }), nowhere()), R.NOT_READY)
   // a check sent nowhere stays a stopped check
   assert.deepEqual(decide(st(), probeReq({ proxyInfo: NOWHERE })), { verdict: 'block', reason: R.REROUTED })
+})
+
+test('WebRTC is limited while anything is assigned, unless it is switched off', () => {
+  // any assignment counts, a blocked container's pages can ask too
+  for (const c of [UP, DOWN, UNKNOWN, MISROUTED, TAKEN, CUSTOM_UP, { ...UP, ip: '', port: 0 }]) {
+    for (const id of ['firefox-container-1', 'firefox-default', 'firefox-private']) {
+      for (const strict of [true, false]) {
+        assert.equal(limitsWebRTC(st({ strict, containers: { [id]: c } })), true, `${id} ${c.health}`)
+        assert.equal(limitsWebRTC(st({ strict, containers: { [id]: c }, limitWebRTC: true })), true, `${id} ${c.health} on`)
+        assert.equal(limitsWebRTC(st({ strict, containers: { [id]: c }, limitWebRTC: false })), false, `${id} ${c.health} off`)
+      }
+    }
+  }
+  // only an explicit off lifts it
+  for (const limitWebRTC of [true, undefined, null, 'false', 0, '', {}]) {
+    assert.equal(limitsWebRTC(st({ limitWebRTC })), true, String(limitWebRTC))
+  }
+  // loopback and Strict have no say
+  assert.equal(limitsWebRTC(st({ allowLocal: true, strict: false })), true)
+  // nothing assigned, so Firefox's setting is left alone
+  assert.equal(limitsWebRTC(st({ containers: {} })), false)
+  assert.equal(limitsWebRTC(st({ containers: {}, limitWebRTC: false })), false)
+  // settings unread, so no change either way
+  for (const containers of [{}, { 'firefox-container-1': UP }]) {
+    for (const limitWebRTC of [true, false]) {
+      assert.equal(limitsWebRTC(st({ ready: false, containers, limitWebRTC })), null)
+    }
+  }
 })
 
 test('the router refuses a preconnect it cannot place', () => {

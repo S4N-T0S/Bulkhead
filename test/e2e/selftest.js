@@ -7,7 +7,7 @@
 // TEST_TUNNEL is set by a generated test-config.js: cases that need live
 // Mullvad relays are skipped without a tunnel, everything else runs anywhere.
 
-/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, moveTail, tail, tailMovedAt, tailFrame, tailFrameLoading, tailFrameMoves:writable, TAIL_FRAME_MOVES, TAIL_FRAME_LOAD_MS, TAIL_OVERLAP_MS, TAIL_PERIOD_MS, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, refreshNotices, settingsOpened, noticesAsked:writable, installOpened:writable, fetchJson:writable, NOTICES_URL, PROBE_SPREAD_MS, relayMemo, relayRecheckAt:writable, applyHardening, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT, nextProbeAt, PROBE_INTERVAL_DOWN_MS */
+/* global state, blockLog, lastBlockedPage, rerouted, routedAt, noteRouted, ROUTED_CAP, moveTail, tail, tailMovedAt, tailFrame, tailFrameLoading, tailFrameMoves:writable, TAIL_FRAME_MOVES, TAIL_FRAME_LOAD_MS, TAIL_OVERLAP_MS, TAIL_PERIOD_MS, assign, unassign, probe, probesInFlight, RECHECK_DELAY_MS, refreshRelays, refreshNotices, settingsOpened, noticesAsked:writable, installOpened:writable, fetchJson:writable, NOTICES_URL, PROBE_SPREAD_MS, relayMemo, relayRecheckAt:writable, applyHardening, setLimitWebRTC, saveCustomExit, log, TEST_TUNNEL, TEST_CANARY_PORT, TEST_SOCKS_PORT, TEST_FOREIGN_PORT, TEST_EXIT_PORT, TEST_LEAK_PORT, nextProbeAt, PROBE_INTERVAL_DOWN_MS */
 
 ;(() => {
   /** @param {string} line */
@@ -112,7 +112,12 @@
     await browser.storage.local.set({ containers: { [deadId]: stored } })
     await waitFor(() => deadId in state.containers, 5000)
     t(`O first moved=${tailMovedAt !== firstMoved}`)
-    t(`Q webrtc inert=${webrtcInert.value === 'default' && webrtcInert.levelOfControl === 'controllable_by_this_extension'} assigned=${await waitForAsync(webrtcHeld, 5000)}`)
+    const webrtcAssigned = await waitForAsync(webrtcHeld, 5000)
+    // off gives the setting back, on takes it again
+    await setLimitWebRTC(false)
+    const webrtcOff = await webrtcFree() && (await webrtc()).value === 'default'
+    await setLimitWebRTC(true)
+    t(`Q webrtc inert=${webrtcInert.value === 'default' && webrtcInert.levelOfControl === 'controllable_by_this_extension'} assigned=${webrtcAssigned} off=${webrtcOff} on=${await webrtcHeld()}`)
     await waitFor(() => {
       const c = state.containers[deadId]
       return Boolean(c && c.health === 'down')
@@ -150,7 +155,7 @@
     if (otherTab.id !== undefined) await browser.tabs.remove(otherTab.id)
 
     // Hardening: apply must take control of prefetching, clear must give it
-    // back untouched. The WebRTC setting stays, since a server is assigned.
+    // back untouched. WebRTC stays held throughout, a server is assigned.
     const applied = await applyHardening(true)
     const applyOk = applied.webRTC.ok && applied.prediction.ok
       && applied.prediction.levelOfControl === 'controlled_by_this_extension'
@@ -913,13 +918,8 @@
 
     await browser.contextualIdentities.remove(deadId).catch(() => null)
 
-    // The last server is gone, so the WebRTC setting goes back. Hardening
-    // holds it with nothing assigned, and gives it back too.
-    const webrtcReleased = await waitForAsync(webrtcFree, 5000)
-    const alone = await applyHardening(true)
-    const aloneOk = alone.webRTC.ok && alone.webRTC.levelOfControl === 'controlled_by_this_extension'
-    await applyHardening(false)
-    t(`Q webrtc released=${webrtcReleased} toggle=${aloneOk} restored=${await webrtcFree() && (await webrtc()).value === 'default'}`)
+    // The last server is gone, so the WebRTC setting goes back.
+    t(`Q webrtc released=${await waitForAsync(webrtcFree, 5000) && (await webrtc()).value === 'default'}`)
 
     // Only the once-per-event warnings may fire: a retired server (with a
     // tunnel, test-dead is one) and DoH. A verdict never does.

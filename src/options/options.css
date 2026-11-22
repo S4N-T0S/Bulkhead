@@ -49,9 +49,11 @@ summary { cursor: pointer; }
 .setting .switch { margin-top: 2px; }
 .sub.block { display: block; font-weight: 400; }
 
-#harden-state, #webrtc-note { margin: 4px 0 0 44px; padding: 0; list-style: none; }
-#harden-state .okmark { font-weight: 700; color: var(--ok); }
-#harden-state .badmark { font-weight: 700; color: var(--bad); }
+#harden-state, #webrtc-state { margin: -4px 0 4px 40px; }
+/* a switch that isn't working shouldn't look like a footnote */
+#harden-state:has(.badmark), #webrtc-state:has(.badmark) { color: var(--text); }
+#webrtc-state .warnmark { font-weight: 700; color: var(--warn); }
+#harden-state .badmark, #webrtc-state .badmark { font-weight: 700; color: var(--bad); }
 
 /* never let the table push past the card it lives in */
 .scroller { overflow-x: auto; }

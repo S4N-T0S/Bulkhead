@@ -2,7 +2,7 @@
 const test = require('node:test')
 const assert = require('node:assert')
 const {
-  timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, rerouteText, flagSrc, relayTags, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy
+  timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, rerouteText, webrtcState, prefetchState, flagSrc, relayTags, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy
 } = require('../../src/ui/fmt.js')
 const { decide } = require('../../src/decide.js')
 
@@ -321,4 +321,55 @@ test('usedBy names the contexts on each host and never shows a raw id', () => {
     'custom:abc': ['No container']
   })
   assert.deepEqual(usedBy(new Map(), names), {})
+})
+
+test('webrtcState is null unless something is off', () => {
+  const OURS = 'controlled_by_this_extension'
+  const FREE = 'controllable_by_this_extension'
+  const OTHER = 'controlled_by_other_extensions'
+  const POLICY = 'not_controllable'
+  const w = (value, levelOfControl, on, assigned = true) => webrtcState({ value, levelOfControl, on, assigned })
+
+  // on and working, whoever holds it
+  for (const level of [OURS, FREE, OTHER, POLICY]) assert.equal(w('proxy_only', level, true), null)
+  // on and not working
+  assert.deepEqual(w('default_public_interface_only', OTHER, true), { kind: 'bad', text: 'Not working. Another extension controls this setting.' })
+  assert.deepEqual(w('default', POLICY, true), { kind: 'bad', text: 'Not working. A policy controls this setting.' })
+  assert.deepEqual(w('default', FREE, true), { kind: 'bad', text: 'Not working.' })
+  // off
+  assert.deepEqual(w('default', FREE, false), { kind: 'warn', text: 'Sites can link your containers.' })
+  assert.deepEqual(w('disable_non_proxied_udp', OTHER, false), { kind: 'warn', text: 'Sites can link your containers.' })
+  // off, and limited all the same
+  assert.deepEqual(w('proxy_only', OTHER, false), { kind: 'off', text: 'Calls stay blocked. Another extension controls this setting.' })
+  assert.deepEqual(w('proxy_only', POLICY, false), { kind: 'off', text: 'Calls stay blocked. A policy controls this setting.' })
+  assert.deepEqual(w('proxy_only', FREE, false), { kind: 'off', text: 'Calls stay blocked.' })
+  // also if Bulkhead could not give the setting back
+  assert.deepEqual(w('proxy_only', OURS, false), { kind: 'off', text: 'Calls stay blocked.' })
+
+  for (const value of ['default', 'default_public_and_private_interfaces', 'default_public_interface_only', 'disable_non_proxied_udp', 'proxy_only']) {
+    for (const level of [OURS, FREE, OTHER, POLICY]) {
+      for (const on of [true, false]) {
+        // nothing assigned, no line
+        assert.equal(w(value, level, on, false), null, `${value} ${level}`)
+        const s = w(value, level, on)
+        // on and assigned but not limited always gets a line
+        if (on && value !== 'proxy_only') assert.equal(s && s.kind, 'bad', `${value} ${level}`)
+        if (!s) continue
+        // no raw setting values, and no holder unless Firefox names one
+        assert.ok(!s.text.includes(value) && !s.text.includes(level), s.text)
+        if (s.text.includes('Another extension')) assert.equal(level, OTHER, value)
+        if (s.text.includes('A policy')) assert.equal(level, POLICY, value)
+      }
+    }
+  }
+})
+
+test('prefetchState flags a switch that is on while prefetching is still on', () => {
+  const p = (value, levelOfControl, on) => prefetchState({ value, levelOfControl, on })
+  assert.equal(p(false, 'controlled_by_this_extension', true), null)
+  assert.equal(p(true, 'controllable_by_this_extension', false), null)
+  assert.equal(p(false, 'controlled_by_other_extensions', false), null)
+  assert.deepEqual(p(true, 'controlled_by_other_extensions', true), { kind: 'bad', text: 'Not working. Another extension controls this setting.' })
+  assert.deepEqual(p(true, 'not_controllable', true), { kind: 'bad', text: 'Not working. A policy controls this setting.' })
+  assert.deepEqual(p(true, 'controllable_by_this_extension', true), { kind: 'bad', text: 'Not working.' })
 })

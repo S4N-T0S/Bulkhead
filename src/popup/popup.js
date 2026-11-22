@@ -102,17 +102,21 @@
   // Reaches people who never open the options page, which is most of them.
   function renderSetupWarning () {
     if (!snapshot) return
-    if (!snapshot.dohActive && snapshot.prefsAck) return
-    const strip = document.createElement('button')
-    strip.className = 'banner warn setup-strip'
-    strip.textContent = snapshot.dohActive
-      ? 'DNS-over-HTTPS is on — it links your containers back together. Fix it →'
-      : 'Setup unfinished — two about:config settings still to set →'
-    strip.addEventListener('click', () => {
-      browser.runtime.openOptionsPage()
-      window.close()
-    })
-    view.append(strip)
+    const texts = []
+    if (snapshot.dohActive) texts.push('DNS-over-HTTPS is on — it links your containers back together. Fix it →')
+    else if (!snapshot.prefsAck) texts.push('Setup unfinished — two about:config settings still to set →')
+    // its own strip, since a policy can keep it there for good
+    if (snapshot.webrtcUnmet) texts.push('WebRTC leaks are not blocked. See Settings →')
+    for (const text of texts) {
+      const strip = document.createElement('button')
+      strip.className = 'banner warn setup-strip'
+      strip.textContent = text
+      strip.addEventListener('click', () => {
+        browser.runtime.openOptionsPage()
+        window.close()
+      })
+      view.append(strip)
+    }
   }
 
   /** @param {string} text */

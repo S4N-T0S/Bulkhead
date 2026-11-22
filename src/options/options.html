@@ -156,24 +156,27 @@
       </span>
     </label>
     <label class="row setting">
-      <span class="switch"><input type="checkbox" id="harden"></span>
+      <span class="switch"><input type="checkbox" id="limit-webrtc" aria-labelledby="limit-webrtc-title" aria-describedby="webrtc-state limit-webrtc-text" checked disabled></span>
       <span class="grow">
-        <strong>Browser hardening</strong>
-        <span class="sub block">
-          Switches prefetch — Firefox connecting to links before you click — off entirely, and
-          keeps WebRTC limited to proxies when no server is assigned too. Whole-browser
-          settings, not per-container, and they are restored exactly as they were.
+        <strong id="limit-webrtc-title">Block WebRTC leaks</strong>
+        <span class="sub block" id="limit-webrtc-text">
+          Stops sites linking your containers through WebRTC.
+          <strong>Video calls (Meet, Jitsi, Discord) stop working in every tab.</strong>
+          Applies once any server is assigned.
         </span>
       </span>
     </label>
-    <ul id="harden-state" class="sub"></ul>
-    <p id="webrtc-note" class="sub">
-      While any server is assigned, WebRTC is limited to proxies in all of Firefox, with or
-      without the switch above. A page could otherwise read the address the Mullvad app exits
-      at, which is the same for every container.
-      <strong>This stops browser video calls working</strong> — Meet, Jitsi, Discord in a tab,
-      in any container or none. It is restored when the last server is unassigned.
-    </p>
+    <p id="webrtc-state" class="sub" role="status" hidden></p>
+    <label class="row setting">
+      <span class="switch"><input type="checkbox" id="harden" aria-labelledby="harden-title" aria-describedby="harden-state harden-text"></span>
+      <span class="grow">
+        <strong id="harden-title">Block prefetching</strong>
+        <span class="sub block" id="harden-text">
+          Stops Firefox connecting to links before you click them, server assigned or not.
+        </span>
+      </span>
+    </label>
+    <p id="harden-state" class="sub" role="status" hidden></p>
   </section>
 
   <section class="card">

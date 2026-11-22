@@ -248,6 +248,7 @@ input[type="text"], input[type="search"], input[type="number"], input[type="pass
 }
 .switch input:checked { background: var(--accent-fill); }
 .switch input:checked::after { left: 16px; }
+.switch input:disabled { opacity: 0.55; cursor: default; }
 
 /* banners */
 .banner {

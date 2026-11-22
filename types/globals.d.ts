@@ -66,6 +66,7 @@ interface KillswitchState {
   dohActive?: boolean
   strict: boolean
   allowLocal?: boolean
+  limitWebRTC?: boolean
   containers: Record<string, ContainerConfig>
   probeTokens: Set<string>
 }
@@ -109,6 +110,7 @@ interface BlockEntry {
 declare function decide(state: KillswitchState, req: GateRequest): Verdict
 declare function refusesRoute(state: KillswitchState, req: { type: string, tabId: number, cookieStoreId?: string }): boolean
 declare function refusesPreconnect(state: KillswitchState, req: { type: string, tabId: number, cookieStoreId?: string }): boolean
+declare function limitsWebRTC(state: KillswitchState): boolean | null
 declare function routedNowhere(via: RouteInfo | null | undefined): boolean
 declare const UNROUTABLE_HOST: string
 declare function probeToken(url: string): string | null
@@ -165,6 +167,8 @@ declare var fmt: {
   rawDetail(detail: string | undefined, custom?: boolean): string
   reasonLabel(reason: string): string
   rerouteText(via: string): string
+  webrtcState(w: { value: string, levelOfControl: string, on: boolean, assigned: boolean }): { kind: 'warn' | 'bad' | 'off', text: string } | null
+  prefetchState(p: { value: unknown, levelOfControl: string, on: boolean }): { kind: 'bad', text: string } | null
   REROUTED_PILL: string
   flagSrc(cc: string): string
   relayTags(r: Relay): string[]
@@ -197,6 +201,8 @@ interface StateSnapshot {
   dohActive: boolean
   strict: boolean
   allowLocal: boolean
+  /** WebRTC should be limited and is not */
+  webrtcUnmet: boolean
   /** Credentials are stripped before a config leaves the background page */
   containers: Record<string, Omit<ContainerConfig, 'password'>>
   blockLog: BlockEntry[]

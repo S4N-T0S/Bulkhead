@@ -282,6 +282,16 @@
     return !state.ready || refusesPreconnect(state, req)
   }
 
+  // Whether WebRTC is kept to proxies. Firefox can only do that for every
+  // tab at once, so it takes an assignment and the switch left on. null
+  // while settings are unread, and the setting is left as it is.
+  /** @param {KillswitchState} state @returns {boolean | null} */
+  function limitsWebRTC (state) {
+    if (!state.ready) return null
+    if (state.limitWebRTC === false) return false
+    return Object.keys(state.containers).length > 0
+  }
+
   /** @param {RouteInfo | null | undefined} via @returns {boolean} */
   function routedNowhere (via) {
     return Boolean(via && via.host === UNROUTABLE_HOST)
@@ -292,7 +302,7 @@
     return { verdict, reason }
   }
 
-  const api = { decide, refusesRoute, refusesPreconnect, routedNowhere, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
+  const api = { decide, refusesRoute, refusesPreconnect, limitsWebRTC, routedNowhere, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, neverProxied, probeTraversed, routedThrough, usableProxy, R, PROBE_MARKER, PROBE_URL, ALLOW, BLOCK }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api

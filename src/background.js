@@ -3,7 +3,7 @@
 // re-implement one; this file's job is state, I/O, health and what the user
 // sees. relays.js owns the relay-list logic.
 
-/* global decide, refusesRoute, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt */
+/* global decide, refusesRoute, limitsWebRTC, UNROUTABLE_HOST, probeToken, isProbeUrl, isLoopbackUrl, probeTraversed, usableProxy, R, PROBE_MARKER, PROBE_URL, relaylib, fmt */
 
 // How long Firefox ignores this proxy after it fails -- a blacklist
 // duration, not a grace period (nsIProtocolProxyService: "the length of time
@@ -69,6 +69,7 @@ const state = {
   dohActive: false,
   strict: true,
   allowLocal: false,
+  limitWebRTC: true,
   containers: Object.create(null),
   probeTokens: new Set()
 }
@@ -144,9 +145,10 @@ function serialize (fn) {
 
 async function hydrate () {
   return serialize(async () => {
-    const s = await browser.storage.local.get(['containers', 'strict', 'allowLocal'])
+    const s = await browser.storage.local.get(['containers', 'strict', 'allowLocal', 'limitWebRTC'])
     state.strict = s.strict !== false
     state.allowLocal = s.allowLocal === true
+    state.limitWebRTC = s.limitWebRTC !== false
     // Health survives for containers whose proxy config did not change;
     // everything else starts at 'unknown', which blocks until proven up.
     // Health is never persisted: a restarted browser trusts nothing.
@@ -218,8 +220,56 @@ async function hydrateWithRetry () {
 
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return
-  if (changes.containers || changes.strict || changes.allowLocal) hydrateWithRetry()
+  if (changes.containers || changes.strict || changes.allowLocal || changes.limitWebRTC) hydrateWithRetry()
 })
+
+// proxy_only is the only policy that keeps the Mullvad app's exit address
+// from a page. With disable_non_proxied_udp an about:blank frame still gets
+// it. It applies to all of Firefox and stops WebRTC in every tab, so there
+// is a switch, see limitsWebRTC. A later extension or a policy can outrank
+// it, and the settings page and popup then say so.
+// declared before the first hydrate, which ends in a sync
+const WEBRTC_POLICY = 'proxy_only'
+/** @type {Promise<unknown>} */
+let webrtcQueue = Promise.resolve()
+// wanted and not in effect
+let webrtcUnmet = false
+// last call made while outranked, so it isn't repeated
+let webrtcShadow = ''
+
+function syncWebRTC () {
+  const next = webrtcQueue.then(async () => {
+    const want = limitsWebRTC(state)
+    if (want === null) return
+    const policy = browser.privacy.network.webRTCIPHandlingPolicy
+    let now = await policy.get({})
+    const ours = now.levelOfControl === 'controlled_by_this_extension'
+    const outranked = !ours && now.levelOfControl !== 'controllable_by_this_extension'
+    if (!outranked) webrtcShadow = ''
+    if (want && !(ours && now.value === WEBRTC_POLICY) && webrtcShadow !== 'set') {
+      // if outranked, Firefox applies it once the other lets go
+      await policy.set({ value: WEBRTC_POLICY })
+      now = await policy.get({})
+      if (outranked) webrtcShadow = 'set'
+      log(now.levelOfControl === 'controlled_by_this_extension'
+        ? '[bulkhead] WebRTC policy set'
+        : `[bulkhead] WebRTC policy is held elsewhere (${now.levelOfControl}), left at ${now.value}`)
+    } else if (!want && (ours || (outranked && webrtcShadow !== 'clear'))) {
+      // ours can sit under another's, clear that too
+      await policy.clear({})
+      now = await policy.get({})
+      if (outranked) webrtcShadow = 'clear'
+      if (ours) log('[bulkhead] WebRTC policy cleared')
+    }
+    webrtcUnmet = want && now.value !== WEBRTC_POLICY
+  })
+  webrtcQueue = next.catch((e) => {
+    // may not have applied, so warn
+    webrtcUnmet = limitsWebRTC(state) === true
+    log('[bulkhead] WebRTC policy failed:', String(e))
+  })
+  return webrtcQueue
+}
 
 // Router: picks the SOCKS exit for each request. Fires before webRequest,
 // except on a request Firefox's classifier cancels, and cannot block -- an
@@ -893,7 +943,11 @@ browser.alarms.onAlarm.addListener((a) => {
     refreshRelays(true).catch(e => log('[bulkhead] relay refresh failed:', String(e)))
     return
   }
-  if (a.name === 'slow') checkDoh()
+  if (a.name === 'slow') {
+    checkDoh()
+    // onChange doesn't fire for a pref changed by hand
+    syncWebRTC()
+  }
   if (a.name !== 'tick') return
 
   const now = Date.now()
@@ -1407,18 +1461,29 @@ async function unassign (cookieStoreId) {
 }
 
 async function getHardening () {
-  const [webrtc, prediction, stored] = await Promise.all([
+  const read = () => Promise.all([
     browser.privacy.network.webRTCIPHandlingPolicy.get({}),
     browser.privacy.network.networkPredictionEnabled.get({}),
     browser.storage.local.get('hardening')
   ])
+  // wait out a sync started meanwhile, or the page gets a stale value
+  let queue = webrtcQueue
+  await queue
+  let [webrtc, prediction, stored] = await read()
+  for (let i = 0; i < 2 && queue !== webrtcQueue; i++) {
+    queue = webrtcQueue
+    await queue
+    ;[webrtc, prediction, stored] = await read()
+  }
   return {
+    ready: state.ready,
     enabled: stored.hardening === true,
-    assigned: Object.keys(state.containers).length > 0,
     webRTC: {
       value: webrtc.value,
       ok: webrtc.value === WEBRTC_POLICY,
-      levelOfControl: webrtc.levelOfControl
+      levelOfControl: webrtc.levelOfControl,
+      on: state.limitWebRTC !== false,
+      assigned: Object.keys(state.containers).length > 0
     },
     prediction: {
       value: prediction.value,
@@ -1428,53 +1493,33 @@ async function getHardening () {
   }
 }
 
-// With any other policy a page gets the address the Mullvad app exits at
-// through WebRTC, the same for every container and also from a blocked one.
-// Measured from an about:blank frame, which has no proxied load of its own
-// for Firefox to go by; disable_non_proxied_udp goes by that load. So this
-// is on while anything is assigned, hardening or not. The setting is for all
-// of Firefox and stops WebRTC in every tab. clear() gives back whatever was
-// there. Another extension's or a policy's setting stays in charge, and the
-// settings page says so.
-const WEBRTC_POLICY = 'proxy_only'
-/** @type {Promise<unknown>} */
-let webrtcQueue = Promise.resolve()
-
-function syncWebRTC () {
-  const next = webrtcQueue.then(async () => {
-    const policy = browser.privacy.network.webRTCIPHandlingPolicy
-    const { hardening } = await browser.storage.local.get('hardening')
-    const want = hardening === true || Object.keys(state.containers).length > 0
-    const now = await policy.get({})
-    const ours = now.levelOfControl === 'controlled_by_this_extension'
-    if (want && !(ours && now.value === WEBRTC_POLICY)) {
-      // kept by Firefox for when whatever outranks it lets go
-      await policy.set({ value: WEBRTC_POLICY })
-      const after = await policy.get({})
-      log(after.levelOfControl === 'controlled_by_this_extension'
-        ? '[bulkhead] WebRTC policy set'
-        : `[bulkhead] WebRTC policy is held elsewhere (${after.levelOfControl}), left at ${after.value}`)
-    } else if (!want && now.levelOfControl !== 'controllable_by_this_extension') {
-      // also one of ours that something else outranks
-      await policy.clear({})
-      if (ours) log('[bulkhead] WebRTC policy cleared')
-    }
+// another extension taking the setting or letting go of it
+try {
+  browser.privacy.network.webRTCIPHandlingPolicy.onChange.addListener(() => {
+    syncWebRTC()
   })
-  webrtcQueue = next.catch(e => log('[bulkhead] WebRTC policy failed:', String(e)))
-  return webrtcQueue
+} catch (e) {
+  log('[bulkhead] WebRTC policy changes are not reported:', String(e))
 }
 
-// Global browser settings, not per-container, which is why the toggle is
+// A global browser setting, not per-container, which is why the toggle is
 // opt-in and clear() restores whatever the user had. networkPredictionEnabled
-// covers DNS prefetch, prerender and preemptive TCP/TLS in one switch. The
-// toggle also keeps the WebRTC policy on with nothing assigned.
+// covers DNS prefetch, prerender and preemptive TCP/TLS in one switch.
 /** @param {boolean} on */
 async function applyHardening (on) {
   if (on) await browser.privacy.network.networkPredictionEnabled.set({ value: false })
   else await browser.privacy.network.networkPredictionEnabled.clear({})
   await browser.storage.local.set({ hardening: on })
-  await syncWebRTC()
   log(`[bulkhead] hardening ${on ? 'applied' : 'cleared'}`)
+  return getHardening()
+}
+
+/** @param {boolean} on */
+async function setLimitWebRTC (on) {
+  await browser.storage.local.set({ limitWebRTC: on })
+  // the page redraws from the reply
+  await hydrate()
+  await syncWebRTC()
   return getHardening()
 }
 
@@ -1500,6 +1545,7 @@ async function getState () {
     dohActive: state.dohActive === true,
     strict: state.strict,
     allowLocal: state.allowLocal === true,
+    webrtcUnmet,
     // A custom exit's config carries its credentials, for ProxyInfo. The
     // pages that render one need a name and an address and nothing else,
     // and blocked.html asks for this snapshot from inside a container.
@@ -1575,6 +1621,9 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
     case 'setAllowLocal':
       await browser.storage.local.set({ allowLocal: msg.on === true })
       return { ok: true }
+    // anything but an explicit off keeps the limit
+    case 'setLimitWebRTC':
+      return setLimitWebRTC(msg.on !== false)
     case 'customSave':
       return saveCustomExit(msg.exit && typeof msg.exit === 'object' ? msg.exit : {})
     case 'customDelete':

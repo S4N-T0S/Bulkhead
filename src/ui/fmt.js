@@ -228,6 +228,37 @@
     }
   }
 
+  // Names who holds a Firefox setting when Firefox says. Otherwise it may
+  // be the user's own pref, so nobody is named.
+  /** @param {string} level @returns {string} */
+  function holderLine (level) {
+    if (level === 'controlled_by_other_extensions') return ' Another extension controls this setting.'
+    if (level === 'not_controllable') return ' A policy controls this setting.'
+    return ''
+  }
+
+  // The line under the WebRTC switch, from the value Firefox reports. null
+  // when it is working or nothing is assigned.
+  /**
+   * @param {{ value: string, levelOfControl: string, on: boolean, assigned: boolean }} w
+   * @returns {{ kind: 'warn' | 'bad' | 'off', text: string } | null}
+   */
+  function webrtcState (w) {
+    if (!w.assigned) return null
+    const limited = w.value === 'proxy_only'
+    if (w.on) return limited ? null : { kind: 'bad', text: `Not working.${holderLine(w.levelOfControl)}` }
+    if (!limited) return { kind: 'warn', text: 'Sites can link your containers.' }
+    return { kind: 'off', text: `Calls stay blocked.${holderLine(w.levelOfControl)}` }
+  }
+
+  /**
+   * @param {{ value: unknown, levelOfControl: string, on: boolean }} p
+   * @returns {{ kind: 'bad', text: string } | null}
+   */
+  function prefetchState (p) {
+    return p.on && p.value !== false ? { kind: 'bad', text: `Not working.${holderLine(p.levelOfControl)}` } : null
+  }
+
   /** @param {string} cc @returns {string} */
   function flagSrc (cc) {
     return /^[a-z]{2}$/.test(cc) ? `/flags/${cc}.svg` : ''
@@ -256,7 +287,7 @@
     return Object.fromEntries([...assigned].map(([host, ids]) => [host, ids.map(id => names[id] || 'another container')]))
   }
 
-  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, rerouteText, REROUTED_PILL, flagSrc, relayTags, exitName, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy }
+  const api = { timeAgo, healthLabel, healthClass, explainDetail, rawDetail, reasonLabel, rerouteText, REROUTED_PILL, webrtcState, prefetchState, flagSrc, relayTags, exitName, tunnelSuspect, tunnelHint, blockedNext, nameList, usedBy }
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api
